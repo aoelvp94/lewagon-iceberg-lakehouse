@@ -1,0 +1,6 @@
+# Airflow side (the dbt venv is defined in the Dockerfile)
+astronomer-cosmos>=1.15.1
+apache-airflow-providers-amazon[s3fs]
+apache-airflow-providers-postgres
+pyiceberg[sql-postgres,pyarrow,s3fs]>=0.11.1
+pyarrow>=21

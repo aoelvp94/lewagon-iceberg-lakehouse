@@ -1,0 +1,52 @@
+version: 2
+
+# ERD:  dim_customers 1--* fct_orders 1--* fct_order_items *--1 dim_products
+models:
+  - name: dim_customers
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: loyalty_tier
+        description: Added by the schema-evolution scenario; 'unknown' before that.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [unknown, bronze, silver, gold, platinum]
+  - name: dim_products
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+  - name: fct_orders
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [placed, paid, shipped, delivered]
+  - name: fct_order_items
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [order_id, line_number]
+    columns:
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id

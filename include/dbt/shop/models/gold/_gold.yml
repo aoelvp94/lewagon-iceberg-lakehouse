@@ -1,0 +1,32 @@
+version: 2
+
+models:
+  - name: gold_daily_revenue
+    columns:
+      - name: order_date
+        data_tests: [unique, not_null]
+  - name: gold_customer_lifetime_value
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+  - name: gold_product_performance
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+  - name: gold_revenue_by_country_tier
+  - name: gold_order_status_funnel
+
+unit_tests:
+  - name: daily_revenue_sums_orders_per_day
+    description: Pure-logic test, no data needed (dbt unit tests, dbt >= 1.8).
+    model: gold_daily_revenue
+    given:
+      - input: ref('fct_orders')
+        rows:
+          - {order_id: 1, order_date: "2026-03-01", n_units: 2, order_amount: 10.00}
+          - {order_id: 2, order_date: "2026-03-01", n_units: 1, order_amount: 30.00}
+          - {order_id: 3, order_date: "2026-03-02", n_units: 5, order_amount: 5.00}
+    expect:
+      rows:
+        - {order_date: "2026-03-01", orders: 2, units: 3, revenue: 40.00, avg_order_value: 20.00}
+        - {order_date: "2026-03-02", orders: 1, units: 5, revenue: 5.00, avg_order_value: 5.00}

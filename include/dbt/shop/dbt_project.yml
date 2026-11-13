@@ -1,0 +1,29 @@
+name: shop
+version: "1.0.0"
+profile: shop
+config-version: 2
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: target
+clean-targets: [target, dbt_packages]
+
+# Medallion architecture
+#   bronze -> one row per business key (dedup of the CDC history in raw / Iceberg)
+#   silver -> business entities of the ERD (dims + facts, FKs tested)
+#   gold   -> aggregated tables consumed by Superset / Streamlit / Metabase
+models:
+  shop:
+    bronze:
+      +schema: bronze
+      +materialized: table
+      +tags: [bronze]
+    silver:
+      +schema: silver
+      +materialized: table
+      +tags: [silver]
+    gold:
+      +schema: gold
+      +materialized: table
+      +tags: [gold]

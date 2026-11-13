@@ -1,0 +1,26 @@
+# One dbt project, two engines. Pick with --target duckdb | postgres.
+# Everything comes from env vars so the same file works on the host, in Astro,
+# in the Prefect runner and in Kestra task containers.
+shop:
+  target: duckdb
+  outputs:
+    duckdb:
+      type: duckdb
+      path: "{{ env_var('DUCKDB_PATH', '../../data/warehouse.duckdb') }}"
+      threads: 1
+      # Iceberg sources are read through pyiceberg (same catalog as the ingestion).
+      # Catalog settings come from PYICEBERG_CATALOG__LAKEHOUSE__* env vars.
+      plugins:
+        - module: iceberg
+          alias: iceberg
+          config:
+            catalog: lakehouse
+    postgres:
+      type: postgres
+      host: "{{ env_var('WAREHOUSE_PG_HOST', 'localhost') }}"
+      port: "{{ env_var('WAREHOUSE_PG_PORT', '5433') | int }}"
+      user: "{{ env_var('WAREHOUSE_PG_USER', 'lakehouse') }}"
+      password: "{{ env_var('WAREHOUSE_PG_PASSWORD', 'lakehouse') }}"
+      dbname: "{{ env_var('WAREHOUSE_PG_DB', 'warehouse') }}"
+      schema: public
+      threads: 4

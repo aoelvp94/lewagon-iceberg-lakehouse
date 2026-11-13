@@ -1,0 +1,21 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Append-only CDC history written by the transfer operator.
+      DuckDB reads it straight from Iceberg (dbt-duckdb `iceberg` plugin);
+      Postgres reads a copy in the `raw` schema (loaded by IcebergToPostgres).
+    schema: raw
+    meta:
+      plugin: iceberg          # ignored by dbt-postgres
+      materialization: table
+    tables:
+      - name: customers
+        meta: {iceberg_table: raw.customers}
+      - name: products
+        meta: {iceberg_table: raw.products}
+      - name: orders
+        meta: {iceberg_table: raw.orders}
+      - name: order_items
+        meta: {iceberg_table: raw.order_items}

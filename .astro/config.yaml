@@ -1,0 +1,4 @@
+project:
+  name: lewagon-iceberg-lakehouse
+webserver:
+  port: 8080

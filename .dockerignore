@@ -1,0 +1,6 @@
+.git
+.venv
+include/data
+include/dbt/shop/target
+include/dbt/shop/logs
+docs

@@ -1,0 +1,21 @@
+version: 2
+
+models:
+  - name: bronze_customers
+    description: One row per customer_id (latest CDC event, deletes flagged).
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+  - name: bronze_products
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+  - name: bronze_orders
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+  - name: bronze_order_items
+    data_tests:
+      - unique_combination:
+          arguments:
+            columns: [order_id, line_number]
