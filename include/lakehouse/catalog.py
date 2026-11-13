@@ -33,3 +33,14 @@ def get_catalog(name: str = DEFAULT_CATALOG, **overrides: str) -> Catalog:
 def ensure_namespace(catalog: Catalog, namespace: str) -> None:
     if (namespace,) not in catalog.list_namespaces():
         catalog.create_namespace(namespace)
+
+
+def prepare_catalog(namespaces: tuple[str, ...] = ("raw",), name: str = DEFAULT_CATALOG) -> None:
+    """Create the catalog tables and namespaces once, *before* parallel loads.
+
+    The SQL catalog creates its own tables on first use; four loaders doing that
+    at the same time race in Postgres (duplicate key on ``iceberg_tables``).
+    """
+    catalog = get_catalog(name)
+    for namespace in namespaces:
+        ensure_namespace(catalog, namespace)

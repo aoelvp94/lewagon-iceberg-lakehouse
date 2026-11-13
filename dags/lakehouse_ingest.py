@@ -23,6 +23,13 @@ from include.operators.transfers import LandingToIcebergOperator
     doc_md=__doc__,
 )
 def lakehouse_ingest():
+    @task
+    def prepare_catalog() -> None:
+        """Catalog tables + `raw` namespace, created once before the parallel loads."""
+        from include.lakehouse.catalog import prepare_catalog
+
+        prepare_catalog()
+
     loads = [
         LandingToIcebergOperator(
             task_id=f"landing_to_iceberg__{name}",
@@ -43,7 +50,7 @@ def lakehouse_ingest():
                   f"rows={r['rows_written']} schema_changes={r['schema_changes']}")
         return results
 
-    loads >> summarize()
+    prepare_catalog() >> loads >> summarize()
 
 
 lakehouse_ingest()
