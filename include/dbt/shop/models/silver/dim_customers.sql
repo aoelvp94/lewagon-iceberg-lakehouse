@@ -9,7 +9,7 @@ select
     case when is_deleted then null else email end as email,
     case when is_deleted then null else split_part(email, '@', 2) end as email_domain,
     country,
-    {{ column_or_default(ref('bronze_customers'), 'loyalty_tier', "'unknown'") }},
+    coalesce(loyalty_tier, 'unknown') as loyalty_tier,
     is_deleted,
     created_at,
     updated_at

@@ -95,7 +95,7 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 
 * **Append + dedup en bronze vs. upsert en raw.** Append conserva la historia (auditoría, _time travel_, reprocesar); upsert simplifica bronze pero pierde eventos intermedios.
 * **Contratos de esquema.** El operador acepta columnas nuevas y promociones seguras (`int→long`, `float→double`). Un cambio incompatible (p. ej. `customer_id` pasa a string) **falla a propósito** (ver `test_incompatible_type_change_fails_loudly`).
-* **Schema evolution aguas abajo.** `bronze` toma las columnas en tiempo de ejecución (`dedup_latest`); `silver` usa `column_or_default` para que `loyalty_tier` funcione antes y después del cambio.
+* **Schema evolution aguas abajo.** Los modelos son SQL plano. `bronze_customers` expone `loyalty_tier` siempre (en `null` hasta que llega la columna, con un `{% if %}` visible en el modelo) y `dim_customers` la completa con `'unknown'`, así `silver` y `gold` funcionan antes y después del cambio.
 * **DuckDB vs Postgres.** Mismos modelos, mismos números (`just compare`), dos formas de leer Iceberg.
 
 ---
