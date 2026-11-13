@@ -1,0 +1,49 @@
+id: lakehouse_dbt_postgres
+namespace: lewagon.lakehouse
+description: |
+  Postgres cannot read Iceberg: copy every raw table into the `raw` schema
+  (include/lakehouse/serve.py), then run the same dbt project with --target postgres.
+
+tasks:
+  - id: copy_raw
+    type: io.kestra.plugin.core.flow.ForEach
+    values: ["raw.customers", "raw.products", "raw.orders", "raw.order_items"]
+    concurrencyLimit: 4
+    tasks:
+      - id: iceberg_to_postgres
+        type: io.kestra.plugin.scripts.shell.Commands
+        commands:
+          - python -m include.lakehouse.cli to-postgres --table {{ taskrun.value }}
+
+  - id: dbt_build_postgres
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+    commands:
+      - dbt build --target postgres --project-dir /app/include/dbt/shop --profiles-dir /app/include/dbt/shop
+
+triggers:
+  - id: after_ingest
+    type: io.kestra.plugin.core.trigger.Flow
+    preconditions:
+      id: ingest_succeeded
+      flows:
+        - namespace: lewagon.lakehouse
+          flowId: lakehouse_ingest
+          states: [SUCCESS]
+
+concurrency:
+  limit: 1
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts
+    values: &runner
+      containerImage: lakehouse-runner:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: lakehouse
+        volumes:
+          - "{{ envs.repo_dir }}:/app"
+  - type: io.kestra.plugin.dbt
+    values:
+      <<: *runner
+      parseRunResults: false

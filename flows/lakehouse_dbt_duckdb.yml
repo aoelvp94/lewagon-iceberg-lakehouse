@@ -1,0 +1,34 @@
+id: lakehouse_dbt_duckdb
+namespace: lewagon.lakehouse
+description: dbt medallion on DuckDB, reading Iceberg directly (dbt-duckdb iceberg plugin).
+
+tasks:
+  - id: dbt_build_duckdb
+    type: io.kestra.plugin.dbt.cli.DbtCLI
+    commands:
+      - dbt build --target duckdb --project-dir /app/include/dbt/shop --profiles-dir /app/include/dbt/shop
+
+triggers:
+  - id: after_ingest
+    type: io.kestra.plugin.core.trigger.Flow
+    preconditions:
+      id: ingest_succeeded
+      flows:
+        - namespace: lewagon.lakehouse
+          flowId: lakehouse_ingest
+          states: [SUCCESS]
+
+concurrency:
+  limit: 1   # DuckDB = one writer per file
+
+pluginDefaults:
+  - type: io.kestra.plugin.dbt
+    values:
+      containerImage: lakehouse-runner:local
+      parseRunResults: false
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: lakehouse
+        volumes:
+          - "{{ envs.repo_dir }}:/app"
