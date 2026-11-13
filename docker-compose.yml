@@ -1,0 +1,87 @@
+# Kestra flavour: Kestra (local mode) + MinIO + Postgres + Metabase.
+name: lakehouse-kestra
+
+networks:
+  default:
+    name: lakehouse   # Kestra's Docker task runner attaches task containers here
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment: {MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    environment: {MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123}
+    volumes: [./infra/minio-init.sh:/minio-init.sh:ro]
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+
+  warehouse-postgres:
+    image: postgres:18
+    environment: {POSTGRES_USER: lakehouse, POSTGRES_PASSWORD: lakehouse, POSTGRES_DB: warehouse}
+    ports: ["5433:5432"]
+    volumes:
+      - warehouse-pg:/var/lib/postgresql
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  # Build-only service: produces the image every Kestra task runs in.
+  lakehouse-runner:
+    build: ./runner
+    image: lakehouse-runner:local
+    command: ["true"]
+
+  kestra:
+    image: kestra/kestra:latest
+    user: root
+    command: server local
+    ports: ["8080:8080"]
+    environment:
+      ENV_REPO_DIR: ${PWD}   # host path of this repo, mounted into task containers as /app
+      KESTRA_CONFIGURATION: |
+        kestra:
+          server:
+            basic-auth:
+              enabled: true
+              username: admin@kestra.io
+              password: Admin1234
+          tasks:
+            tmp-dir:
+              path: /tmp/kestra-wd/tmp
+          plugins:
+            configurations:
+              - type: io.kestra.plugin.scripts.runner.docker.Docker
+                values:
+                  volume-enabled: true
+        micronaut:
+          io:
+            watch:
+              enabled: true
+              paths:
+                - /flows
+    volumes:
+      - kestra-data:/app/storage
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/kestra-wd:/tmp/kestra-wd
+      - ./flows:/flows
+    depends_on: [warehouse-postgres, minio-init, lakehouse-runner]
+
+  metabase:
+    image: metabase/metabase:latest
+    ports: ["3000:3000"]
+    environment:
+      MB_PLUGINS_DIR: /plugins
+    volumes:
+      - metabase-data:/metabase-data
+      - ./infra/metabase/plugins:/plugins     # optional DuckDB driver: just metabase-duckdb-driver
+      - ./include/data:/data:ro
+    depends_on: [warehouse-postgres]
+
+volumes:
+  minio-data:
+  warehouse-pg:
+  kestra-data:
+  metabase-data:

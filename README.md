@@ -1,4 +1,4 @@
-# Le Wagon · Lakehouse con Iceberg, dbt y tres orquestadores
+# Le Wagon · Lakehouse con Iceberg, dbt y tres orquestadores · rama `kestra`
 
 Pipeline de punta a punta para clase:
 
@@ -10,7 +10,7 @@ La lógica de negocio es la misma en todas las ramas; lo único que cambia es el
 |---|---|---|---|
 | `main` | **Airflow 3.3** (Astro CLI) | Cosmos (`DbtTaskGroup`) | **Superset** |
 | `prefect` | **Prefect 3** | `prefect-dbt` (`PrefectDbtRunner`) | **Streamlit** |
-| `kestra` | **Kestra** | `io.kestra.plugin.dbt.cli.DbtCLI` | **Metabase** |
+| `kestra` ← **estás acá** | **Kestra** | `io.kestra.plugin.dbt.cli.DbtCLI` | **Metabase** |
 
 Todo se maneja con `just` (`just` a secas lista las recetas).
 
@@ -21,15 +21,19 @@ Todo se maneja con `just` (`just` a secas lista las recetas).
 ```mermaid
 flowchart LR
     gen["scripts/generate_data.py<br/>(sistema fuente falso)"] -->|batch=000N| landing[(MinIO<br/>s3://landing/shop)]
-    landing -->|LandingToIcebergOperator| raw[(Iceberg raw.*<br/>s3://warehouse + catálogo SQL en Postgres)]
+    landing -->|flow lakehouse_ingest| raw[(Iceberg raw.*<br/>s3://warehouse + catálogo SQL en Postgres)]
     raw -->|plugin iceberg de dbt-duckdb| duck[(DuckDB<br/>bronze · silver · gold)]
-    raw -->|IcebergToPostgresOperator| pgraw[(Postgres raw.*)]
+    raw -->|cli to-postgres| pgraw[(Postgres raw.*)]
     pgraw --> pg[(Postgres<br/>bronze · silver · gold)]
-    duck --> bi[Superset]
+    duck -.->|driver opcional| bi[Metabase]
     pg --> bi
 ```
 
-* **Transfer operator** (`include/operators/transfers.py`): `LandingToIcebergOperator` sigue la convención de los providers de Airflow (`<Origen>To<Destino>Operator`). Toda la lógica está en `include/lakehouse/` (pyarrow + fsspec + pyiceberg, sin pandas) para que Prefect y Kestra ejecuten exactamente el mismo código.
+* **Transfer**: en `main` es el `LandingToIcebergOperator` de Airflow; acá es un comando, `python -m include.lakehouse.cli ingest --entity …`, que llama a la misma función (`include/lakehouse/ingest.py`, pyarrow + fsspec + pyiceberg, sin pandas).
+* **Flows Kestra** (`flows/*.yml`, namespace `lewagon.lakehouse`), sincronizados solos desde la carpeta:
+  * `lakehouse_ingest`: `ForEach` sobre las 4 entidades, en paralelo.
+  * `lakehouse_dbt_duckdb` y `lakehouse_dbt_postgres`: arrancan con un **Flow trigger** cuando la ingesta termina en `SUCCESS` (equivalente a los Assets de Airflow).
+* Cada task corre en un contenedor `lakehouse-runner:local` (Docker task runner) con el repo montado en `/app`: Kestra orquesta y el código sigue siendo el mismo.
 * **Iceberg**: catálogo SQL de pyiceberg guardado en Postgres; datos y metadata en MinIO. Cada batch = un snapshot (con la propiedad `lakehouse.batch-id`), lo que da idempotencia y _time travel_ por batch.
 * **Dos motores, un proyecto dbt** (`include/dbt/shop`, targets `duckdb` y `postgres`):
   * DuckDB lee Iceberg **directo** → estilo _lakehouse_.
@@ -54,31 +58,29 @@ erDiagram
 
 ## Requisitos
 
-* Docker, [Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli), [uv](https://docs.astral.sh/uv/), [just](https://just.systems)
+* Docker, [uv](https://docs.astral.sh/uv/), [just](https://just.systems), curl
 * ~6 GB de RAM libres para Docker
 
 ## Arranque rápido
 
 ```bash
-just setup        # crea .env
-just up           # Airflow + MinIO + Postgres + Superset
-just demo-initial # genera el batch inicial y dispara la ingesta
+just up             # Kestra + MinIO + Postgres + Metabase (+ imagen de tareas)
+just demo-initial   # genera el batch inicial y ejecuta lakehouse_ingest
+just metabase-setup # admin + conexión Postgres + dashboard "Shop · Lakehouse"
 ```
-
-`lakehouse_ingest` actualiza el asset `iceberg_raw`, y eso dispara solos `lakehouse_dbt_duckdb` y `lakehouse_dbt_postgres`.
 
 | Servicio | URL | Usuario |
 |---|---|---|
-| Airflow | http://localhost:8080 | — |
+| Kestra | http://localhost:8080 | admin@kestra.io / Admin1234 |
+| Metabase | http://localhost:3000 | admin@lewagon.example / LeWagon2026! |
 | MinIO | http://localhost:9001 | minio / minio123 |
-| Superset | http://localhost:8088 | admin / admin |
 | Postgres (warehouse) | localhost:5433 | lakehouse / lakehouse |
 
 ---
 
 ## Guion de clase
 
-Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno, mirá Airflow, Iceberg y los dashboards.
+Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno, mirá Kestra (Executions → Gantt / Logs), Iceberg y Metabase.
 
 | # | Comando | Qué pasa | Cómo verlo |
 |---|---|---|---|
@@ -86,7 +88,7 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 | 2 | `just demo-updates` | Updates (emails, países, estados de pedido, precios), 3 deletes (GDPR) y 5 filas duplicadas exactas. `raw` crece; `bronze` sigue con 1 fila por clave. | `just dedup-check` · `just history customers "customer_id = 7"` · `just time-travel customers` |
 | 3 | `just demo-schema-evolution` | La fuente pasa a exportar Parquet: aparece `loyalty_tier` en customers y `quantity` pasa de `int` a `long`. Iceberg evoluciona el esquema sin reescribir datos. | `just schema-history customers` · `just schema order_items` · gold `gold_revenue_by_country_tier` deja de decir `unknown` |
 | 4 | `just demo-late-arriving` | Llegan eventos **viejos** después de los nuevos. Bronze debe ignorarlos porque ordena por `updated_at`. | Test singular `assert_bronze_dedup_keeps_latest` en verde · `gold_order_status_funnel` no cambia |
-| 5 | `just demo-idempotency` | Re-ejecutar un batch ya cargado no escribe nada (snapshot property). | Log del task: `batches_skipped=['0001']` · `just snapshots` sin snapshot nuevo |
+| 5 | `just demo-idempotency` | Re-ejecutar un batch ya cargado no escribe nada (snapshot property). | Log de `landing_to_iceberg`: `batches_skipped=['0001']` · `just snapshots` sin snapshot nuevo |
 | 6 | `just nuke && just up && just demo-upsert` | Mismos batches 1 y 2 pero con `table.upsert()` (merge por PK) en vez de append, en un stack limpio. Discutir: ¿historia en raw o estado actual? | `just snapshots orders` (operación `overwrite`/`delete`) |
 
 `just demo-all` corre 1→4 con pausas.
@@ -105,33 +107,43 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 | Comando | Qué prueba |
 |---|---|
 | `just test` | Lógica de ingesta sin Docker (catálogo SQLite + archivos locales): carga inicial, idempotencia, historia + time travel, columna nueva, `int→long`, upsert, cambio incompatible. |
-| `just test-dags` | Integridad de los DAGs dentro de la imagen de Astro. |
 | `just test-dbt` | Unit test de dbt (`gold_daily_revenue`) + data tests (unique, not_null, relationships, accepted_values, dedup) en ambos motores. |
 
-## Superset
+## Metabase
 
-Al arrancar ya están creadas las conexiones **Warehouse Postgres** y **Warehouse DuckDB** (solo lectura). Ver [`docs/superset.md`](docs/superset.md) para armar el dashboard en 5 minutos.
+`just metabase-setup` crea el admin, la conexión **Warehouse Postgres** y el dashboard **Shop · Lakehouse** (revenue diario, funnel de estados, revenue por tier, top productos) con SQL nativo sobre `gold`.
 
-> DuckDB admite un solo escritor: si Superset da error de _lock_ mientras corre dbt, esperá a que termine el DAG y refrescá.
+Para comparar con DuckDB: `just metabase-duckdb-driver` descarga el driver comunitario de MotherDuck y `just metabase-setup` agrega **Warehouse DuckDB** (solo lectura). Es opcional: Metabase no trae DuckDB de fábrica.
+
+## Airflow vs Kestra (para la discusión)
+
+| | Airflow (`main`) | Kestra (esta rama) |
+|---|---|---|
+| Definición | Python (DAGs) | YAML declarativo |
+| Código de negocio | operador custom en el proceso de Airflow | comandos en contenedores (Docker task runner) |
+| Fan-out por entidad | lista de operadores / dynamic mapping | `ForEach` + `concurrencyLimit` |
+| Encadenar dbt | Assets | Flow trigger con `preconditions` |
+| dbt | Cosmos: 1 task por modelo | `DbtCLI`: un `dbt build` (logs por modelo en la UI) |
+| Concurrencia DuckDB | `max_active_tasks=1` | `concurrency.limit: 1` |
 
 ## Estructura
 
 ```
-├── dags/                      # Airflow: ingest + dbt DuckDB + dbt Postgres
+├── flows/                     # Kestra: ingest, dbt DuckDB, dbt Postgres (YAML)
+├── runner/                    # imagen donde corre cada task de Kestra
 ├── include/
-│   ├── lakehouse/             # lógica compartida (sin orquestador)
-│   ├── operators/transfers.py # LandingToIcebergOperator, IcebergToPostgresOperator
+│   ├── lakehouse/             # lógica compartida (+ cli.py para orquestadores "de comandos")
 │   ├── dbt/shop/              # proyecto dbt (bronze/silver/gold, 2 targets)
 │   └── data/                  # warehouse.duckdb (ignorado por git)
-├── scripts/                   # generador de datos + inspector de Iceberg (uv)
-├── infra/                     # init de Postgres/MinIO, imagen de Superset
-├── tests/                     # pytest (ingesta) + integridad de DAGs
-├── docker-compose.override.yml
+├── scripts/                   # generador, inspector de Iceberg, setup de Metabase (uv)
+├── infra/                     # init de Postgres/MinIO, plugins de Metabase
+├── tests/                     # pytest (ingesta)
+├── docker-compose.yml
 └── justfile
 ```
 
 ## Versiones
 
-Astro Runtime 3.3 (Airflow 3.3) · astronomer-cosmos ≥ 1.15 · pyiceberg ≥ 0.11.1 · dbt-core 1.x + dbt-duckdb + dbt-postgres · DuckDB ≥ 1.5.4 · Postgres 18.
+Kestra (latest) · plugin dbt `DbtCLI` · Metabase (latest) · pyiceberg ≥ 0.11.1 · dbt-core 1.x + dbt-duckdb + dbt-postgres · DuckDB ≥ 1.5.4 · Postgres 18.
 
-> dbt Fusion (v2) todavía no se usa acá: Cosmos y el plugin de Iceberg de dbt-duckdb corren sobre dbt Core.
+> dbt Fusion (v2) todavía no se usa acá: el plugin de Iceberg de dbt-duckdb corre sobre dbt Core.

@@ -1,0 +1,38 @@
+id: lakehouse_ingest
+namespace: lewagon.lakehouse
+description: |
+  Landing zone -> Iceberg raw tables. One task per entity, in parallel.
+  Same Python as Airflow's LandingToIcebergOperator (include/lakehouse/ingest.py),
+  called through `python -m include.lakehouse.cli`.
+  Its SUCCESS triggers lakehouse_dbt_duckdb and lakehouse_dbt_postgres (Flow triggers).
+
+labels:
+  course: lewagon
+
+inputs:
+  - id: mode
+    type: SELECT
+    values: [append, upsert]
+    defaults: append
+
+tasks:
+  - id: per_entity
+    type: io.kestra.plugin.core.flow.ForEach
+    values: ["customers", "products", "orders", "order_items"]
+    concurrencyLimit: 4
+    tasks:
+      - id: landing_to_iceberg
+        type: io.kestra.plugin.scripts.shell.Commands
+        commands:
+          - python -m include.lakehouse.cli ingest --entity {{ taskrun.value }} --mode {{ inputs.mode }}
+
+pluginDefaults:
+  - type: io.kestra.plugin.scripts
+    values:
+      containerImage: lakehouse-runner:local
+      taskRunner:
+        type: io.kestra.plugin.scripts.runner.docker.Docker
+        pullPolicy: NEVER
+        networkMode: lakehouse
+        volumes:
+          - "{{ envs.repo_dir }}:/app"

@@ -1,50 +1,64 @@
-# Le Wagon · Iceberg lakehouse demo · Airflow (Astro CLI) + Cosmos + Superset
-# `just` lists every recipe. Host tools needed: astro, docker, uv, just.
+# Le Wagon · Iceberg lakehouse demo · Kestra + dbt CLI plugin + Metabase
+# `just` lists every recipe. Host tools needed: docker, uv, just, curl.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Host-side view of the stack (scripts run on your laptop, not in containers)
 export MINIO_ENDPOINT := "http://localhost:9000"
 export LANDING_URI := "s3://landing/shop"
+kestra := "http://localhost:8080/api/v1/main"
+kestra_auth := "admin@kestra.io:Admin1234"
 
 default:
     @just --list --unsorted
 
 # ─── lifecycle ──────────────────────────────────────────────────────────────
 
-# First time only: create .env from the example
 setup:
-    @test -f .env || cp .env.example .env
-    @mkdir -p include/data
-    @echo "✔ .env ready. Next: just up"
+    @mkdir -p include/data /tmp/kestra-wd
+    @echo "✔ nothing else to configure (credentials live in docker-compose.yml)"
 
-# Start Airflow + MinIO + Postgres + Superset
+# Start Kestra + MinIO + Postgres + Metabase (and build the task image)
 up: setup
-    astro dev start --wait 5m
+    docker compose up -d --build
     @just urls
+    @echo "Flows in ./flows are synced into Kestra automatically. Then: just metabase-setup"
 
-# Stop containers (keeps data)
 down:
-    astro dev stop
+    docker compose down
 
-# Stop and delete ALL data (Iceberg files, catalog, DuckDB, Superset)
+# Stop and delete ALL data
 nuke:
-    astro dev kill
+    docker compose down -v
     rm -f include/data/*.duckdb include/data/*.wal
 
-# Rebuild the image after changing requirements / Dockerfile
-restart:
-    astro dev restart
+# Rebuild the task image after changing runner/Dockerfile
+rebuild-runner:
+    docker compose build lakehouse-runner
 
-logs:
-    astro dev logs -f
+logs service="kestra":
+    docker compose logs -f {{ service }}
 
-# Where everything lives
 urls:
-    @echo "Airflow    http://localhost:8080"
+    @echo "Kestra     http://localhost:8080   (admin@kestra.io / Admin1234)"
+    @echo "Metabase   http://localhost:3000   (admin@lewagon.example / LeWagon2026!)"
     @echo "MinIO      http://localhost:9001   (minio / minio123)"
-    @echo "Superset   http://localhost:8088   (admin / admin)"
     @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
+
+# Push flows through the API (only needed if the file watcher is off)
+deploy:
+    for f in flows/*.yml; do \
+      curl -sfu {{ kestra_auth }} -X POST "{{ kestra }}/flows/import" -F fileUpload=@$f >/dev/null && echo "✔ $f"; \
+    done
+
+# Admin user, Postgres connection and a gold dashboard in Metabase
+metabase-setup:
+    uv run scripts/metabase_setup.py
+
+# Optional: community DuckDB driver so Metabase can read warehouse.duckdb too
+metabase-duckdb-driver:
+    curl -fL -o infra/metabase/plugins/duckdb.metabase-driver.jar \
+      https://github.com/motherduckdb/metabase_duckdb_driver/releases/latest/download/duckdb.metabase-driver.jar
+    docker compose restart metabase
 
 # ─── data generation + ingestion ────────────────────────────────────────────
 
@@ -52,13 +66,11 @@ urls:
 generate scenario="initial":
     uv run scripts/generate_data.py {{ scenario }}
 
-# Run the transfer operators (landing -> Iceberg). mode: append | upsert
+# Execute lakehouse_ingest (waits); its SUCCESS triggers both dbt flows. mode: append | upsert
 ingest mode="append":
-    astro dev run dags unpause lakehouse_ingest >/dev/null
-    astro dev run dags unpause lakehouse_dbt_duckdb >/dev/null
-    astro dev run dags unpause lakehouse_dbt_postgres >/dev/null
-    astro dev run dags trigger lakehouse_ingest --conf '{"mode": "{{ mode }}"}'
-    @echo "→ follow it at http://localhost:8080 (dbt DAGs start automatically after it)"
+    curl -sfu {{ kestra_auth }} -X POST "{{ kestra }}/executions/lewagon.lakehouse/lakehouse_ingest?wait=true" \
+      -F mode={{ mode }} | uv run python -c "import json,sys; e=json.load(sys.stdin); print('ingest', e['state']['current'], '→ http://localhost:8080/ui/main/executions/lewagon.lakehouse/lakehouse_ingest/' + e['id'])"
+    @echo "→ dbt flows start now (Flow triggers). Metabase: http://localhost:3000"
 
 # ─── classroom demos ────────────────────────────────────────────────────────
 
@@ -124,7 +136,7 @@ compare model="gold.gold_order_status_funnel":
 dedup-check:
     just psql "select 'raw' as layer, count(*) from raw.customers union all select 'bronze', count(*) from bronze.bronze_customers"
 
-# ─── dbt from the host (handy to debug models without Airflow) ──────────────
+# ─── dbt from the host (handy to debug models without the orchestrator) ──────────────
 
 # e.g. just dbt build --target postgres --select silver
 dbt *args:
@@ -147,10 +159,6 @@ test:
     uv run --with "pyiceberg[sql-sqlite,pyarrow]>=0.11.1" --with fsspec --with pytest \
       pytest tests/lakehouse -q
 
-# DAG integrity tests inside the Astro image
-test-dags:
-    astro dev pytest tests/dags
-
 # dbt data tests + unit tests on both engines
 test-dbt:
     just dbt build --target duckdb --select "test_type:unit"
@@ -161,7 +169,7 @@ test-dbt:
 
 demo-all:
     just demo-initial
-    @read -p "Initial load triggered. Check Airflow, then press Enter for updates… " _
+    @read -p "Initial load done. Check Kestra + Metabase, then press Enter for updates… " _
     just demo-updates
     @read -p "Press Enter for schema evolution… " _
     just demo-schema-evolution
