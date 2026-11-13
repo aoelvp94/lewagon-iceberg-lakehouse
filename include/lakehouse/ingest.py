@@ -95,12 +95,10 @@ def committed_batches(table: Table) -> set[str]:
 
 
 def _summary_dict(summary) -> dict[str, str]:
+    """Snapshot summary as a plain dict (pyiceberg's ``Summary`` keeps custom keys apart)."""
     if summary is None:
         return {}
-    try:
-        return dict(summary)
-    except TypeError:
-        return dict(getattr(summary, "additional_properties", {}) or {})
+    return {"operation": str(summary.operation.value), **summary.additional_properties}
 
 
 # --------------------------------------------------------------------------- reading

@@ -38,10 +38,9 @@ def catalog():
 
 
 def summary(snapshot) -> dict:
-    try:
-        return dict(snapshot.summary)
-    except TypeError:
-        return dict(getattr(snapshot.summary, "additional_properties", {}) or {})
+    """Snapshot summary as a plain dict (pyiceberg's ``Summary`` keeps custom keys apart)."""
+    sm = snapshot.summary
+    return {"operation": str(sm.operation.value), **sm.additional_properties} if sm else {}
 
 
 def when(ms: int) -> str:
