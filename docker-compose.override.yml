@@ -48,6 +48,30 @@ services:
       - ./include/data:/data:ro
       - superset-home:/app/superset_home
 
+  jupyter:
+    networks: [airflow]
+    # Built by `just up` (see infra/jupyter/Dockerfile)
+    image: lewagon/jupyter:local
+    pull_policy: never
+    # Local classroom demo only: no token / password
+    command: start-notebook.py --IdentityProvider.token='' --ServerApp.password=''
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+      PYICEBERG_CATALOG__LAKEHOUSE__TYPE: sql
+      PYICEBERG_CATALOG__LAKEHOUSE__URI: postgresql+psycopg2://lakehouse:lakehouse@warehouse-postgres:5432/iceberg_catalog
+      PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE: s3://warehouse
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID: minio
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY: minio123
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION: us-east-1
+    ports: ["8888:8888"]
+    depends_on: [warehouse-postgres, minio]
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./include/data:/data:ro
+
 volumes:
   minio-data:
   warehouse-pg:

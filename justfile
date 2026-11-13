@@ -19,13 +19,14 @@ setup:
     @echo "✔ .env ready. Next: just up"
 
 # Start Airflow + MinIO + Postgres + Superset
-up: setup build-superset
+up: setup build-images
     astro dev start --wait 5m
     @just urls
 
-# Build the Superset image (DuckDB + Postgres drivers) used by docker-compose.override.yml
-build-superset:
+# Build the images used by docker-compose.override.yml (the Astro CLI does not build them)
+build-images:
     docker build -q -t lewagon/superset:local infra/superset
+    docker build -q -t lewagon/jupyter:local infra/jupyter
 
 # Stop containers (keeps data)
 down:
@@ -49,6 +50,7 @@ urls:
     @echo "MinIO      http://localhost:9001   (minio / minio123)"
     @echo "Superset   http://localhost:8088   (admin / admin)"
     @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
+    @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
 
 # ─── data generation + ingestion ────────────────────────────────────────────
 
@@ -127,6 +129,17 @@ compare model="gold.gold_order_status_funnel":
 # Show dedup at work: rows in raw vs bronze
 dedup-check:
     just psql "select 'raw' as layer, count(*) from raw.customers union all select 'bronze', count(*) from bronze.bronze_customers"
+
+# ─── notebooks ──────────────────────────────────────────────────────────────
+
+# Open the exploration notebook (jupysql on Postgres + DuckDB, files in MinIO)
+notebook:
+    open "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb" || echo "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+
+# Run the notebook headless inside the container (checks every snippet still works)
+notebook-check:
+    docker exec $(docker ps -qf "name=jupyter") jupyter nbconvert --to notebook --execute \
+      --output /tmp/explore_lakehouse.out.ipynb notebooks/explore_lakehouse.ipynb
 
 # ─── dbt from the host (handy to debug models without Airflow) ──────────────
 
