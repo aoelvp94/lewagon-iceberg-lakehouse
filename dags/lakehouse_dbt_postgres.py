@@ -7,6 +7,7 @@ table into the ``raw`` schema before Cosmos runs the dbt models.
 from __future__ import annotations
 
 import pendulum
+from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.sdk import dag
 from cosmos import DbtTaskGroup
 
@@ -25,6 +26,12 @@ from include.operators.transfers import IcebergToPostgresOperator
     doc_md=__doc__,
 )
 def lakehouse_dbt_postgres():
+    # Parallel dbt tasks would race on `create schema if not exists`: create them once here.
+    schemas = SQLExecuteQueryOperator(
+        task_id="create_medallion_schemas",
+        conn_id="warehouse_postgres",
+        sql=[f"create schema if not exists {s}" for s in ("bronze", "silver", "gold")],
+    )
     copies = [
         IcebergToPostgresOperator(
             task_id=f"iceberg_to_postgres__{e.name}",
@@ -42,7 +49,7 @@ def lakehouse_dbt_postgres():
         render_config=render_config,
         operator_args={"install_deps": False},
     )
-    copies >> dbt
+    copies >> schemas >> dbt
 
 
 lakehouse_dbt_postgres()
