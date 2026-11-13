@@ -1,7 +1,0 @@
-# Connections come from .env (AIRFLOW_CONN_*); kept here so Astro finds the file.
-airflow:
-  connections: []
-  pools: []
-  variables:
-    - variable_name: landing_uri
-      variable_value: s3://landing/shop
