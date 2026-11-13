@@ -10,7 +10,12 @@ DBT_EXECUTABLE = AIRFLOW_HOME / "dbt_venv" / "bin" / "dbt"  # isolated venv, see
 
 project_config = ProjectConfig(DBT_PROJECT)
 execution_config = ExecutionConfig(dbt_executable_path=str(DBT_EXECUTABLE))
-render_config = RenderConfig(test_behavior=TestBehavior.AFTER_EACH)
+# Tests run right after their model; tests touching two models (relationships)
+# get their own task once *both* parents are built.
+render_config = RenderConfig(
+    test_behavior=TestBehavior.AFTER_EACH,
+    should_detach_multiple_parents_tests=True,
+)
 
 
 def profile(target: str) -> ProfileConfig:
