@@ -19,9 +19,13 @@ setup:
     @echo "✔ .env ready. Next: just up"
 
 # Start Airflow + MinIO + Postgres + Superset
-up: setup
+up: setup build-superset
     astro dev start --wait 5m
     @just urls
+
+# Build the Superset image (DuckDB + Postgres drivers) used by docker-compose.override.yml
+build-superset:
+    docker build -q -t lewagon/superset:local infra/superset
 
 # Stop containers (keeps data)
 down:
