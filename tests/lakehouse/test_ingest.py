@@ -7,7 +7,7 @@ import pytest
 from pyiceberg.types import LongType
 
 from include.lakehouse.entities import CUSTOMERS, ENTITIES, ORDER_ITEMS, ORDERS
-from include.lakehouse.ingest import BATCH_PROPERTY, committed_batches, land_to_iceberg
+from include.lakehouse.ingest import BATCH_PROPERTY, _summary_dict, committed_batches, land_to_iceberg
 
 
 def load(entity, catalog, landing, mode="append"):
@@ -44,7 +44,7 @@ def test_updates_are_appended_and_history_is_queryable(catalog, landing, generat
 
     table = catalog.load_table("raw.customers")
     first, second = table.snapshots()
-    assert dict(second.summary)[BATCH_PROPERTY] == "0002"
+    assert _summary_dict(second.summary)[BATCH_PROPERTY] == "0002"
 
     # raw keeps every version -> more rows than customers; bronze will dedup
     now = table.scan().to_arrow()
