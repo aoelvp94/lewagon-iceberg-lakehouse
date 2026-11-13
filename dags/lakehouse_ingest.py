@@ -30,27 +30,25 @@ def lakehouse_ingest():
 
         prepare_catalog()
 
-    loads = [
-        LandingToIcebergOperator(
-            task_id=f"landing_to_iceberg__{name}",
-            entity=name,
-            source_uri="{{ var.value.get('landing_uri', 's3://landing/shop') }}",
-            source_conn_id="minio",
-            mode="{{ params.mode }}",
-        )
-        for name in ENTITIES
-    ]
+    # Dynamic task mapping: one mapped task instance per entity, created at run time.
+    loads = LandingToIcebergOperator.partial(
+        task_id="landing_to_iceberg",
+        source_uri="{{ var.value.get('landing_uri', 's3://landing/shop') }}",
+        source_conn_id="minio",
+        mode="{{ params.mode }}",
+        map_index_template="{{ task.entity }}",  # label each instance in the UI
+    ).expand(entity=list(ENTITIES))
 
     @task(outlets=[ICEBERG_RAW])
-    def summarize(**context) -> dict:
-        ti = context["ti"]
-        results = {t.task_id: ti.xcom_pull(task_ids=t.task_id) for t in loads}
-        for task_id, r in results.items():
-            print(f"{task_id}: loaded={r['batches_loaded']} skipped={r['batches_skipped']} "
+    def summarize(results: list[dict]) -> list[dict]:
+        """Receives the return value of every mapped instance."""
+        for r in results:
+            print(f"{r['table']}: loaded={r['batches_loaded']} skipped={r['batches_skipped']} "
                   f"rows={r['rows_written']} schema_changes={r['schema_changes']}")
-        return results
+        return list(results)
 
-    prepare_catalog() >> loads >> summarize()
+    prepare_catalog() >> loads
+    summarize(loads.output)
 
 
 lakehouse_ingest()

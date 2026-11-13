@@ -32,15 +32,13 @@ def lakehouse_dbt_postgres():
         conn_id="warehouse_postgres",
         sql=[f"create schema if not exists {s}" for s in ("bronze", "silver", "gold")],
     )
-    copies = [
-        IcebergToPostgresOperator(
-            task_id=f"iceberg_to_postgres__{e.name}",
-            table_identifier=e.table_identifier,
-            postgres_conn_id="warehouse_postgres",
-            target_schema="raw",
-        )
-        for e in ENTITIES.values()
-    ]
+    # Dynamic task mapping: one copy per Iceberg raw table.
+    copies = IcebergToPostgresOperator.partial(
+        task_id="iceberg_to_postgres",
+        postgres_conn_id="warehouse_postgres",
+        target_schema="raw",
+        map_index_template="{{ task.table_identifier }}",
+    ).expand(table_identifier=[e.table_identifier for e in ENTITIES.values()])
     dbt = DbtTaskGroup(
         group_id="dbt_postgres",
         project_config=project_config,
