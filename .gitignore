@@ -11,3 +11,4 @@ include/dbt/shop/logs/
 logs/
 airflow_settings.local.yaml
 .DS_Store
+include/dbt/shop/.user.yml
