@@ -1,0 +1,85 @@
+# Prefect flavour: Prefect server + a runner serving the flow + Streamlit.
+name: lakehouse-prefect
+
+x-lakehouse-env: &lakehouse-env
+  MINIO_ROOT_USER: minio
+  MINIO_ROOT_PASSWORD: minio123
+  MINIO_ENDPOINT: http://minio:9000
+  LANDING_URI: s3://landing/shop
+  PYICEBERG_CATALOG__LAKEHOUSE__TYPE: sql
+  PYICEBERG_CATALOG__LAKEHOUSE__URI: postgresql+psycopg2://lakehouse:lakehouse@warehouse-postgres:5432/iceberg_catalog
+  PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE: s3://warehouse
+  PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT: http://minio:9000
+  PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID: minio
+  PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY: minio123
+  PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION: us-east-1
+  DUCKDB_PATH: /app/include/data/warehouse.duckdb
+  WAREHOUSE_PG_HOST: warehouse-postgres
+  WAREHOUSE_PG_PORT: "5432"
+  WAREHOUSE_PG_USER: lakehouse
+  WAREHOUSE_PG_PASSWORD: lakehouse
+  WAREHOUSE_PG_DB: warehouse
+
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment: {MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123}
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on: [minio]
+    environment: {MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123}
+    volumes: [./infra/minio-init.sh:/minio-init.sh:ro]
+    entrypoint: ["/bin/sh", "/minio-init.sh"]
+
+  warehouse-postgres:
+    image: postgres:18
+    environment: {POSTGRES_USER: lakehouse, POSTGRES_PASSWORD: lakehouse, POSTGRES_DB: warehouse}
+    ports: ["5433:5432"]
+    volumes:
+      - warehouse-pg:/var/lib/postgresql
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lakehouse -d warehouse"]
+      interval: 5s
+      retries: 20
+
+  prefect-server:
+    image: prefecthq/prefect:3-latest
+    command: prefect server start --host 0.0.0.0
+    environment:
+      PREFECT_UI_API_URL: http://localhost:4200/api
+    ports: ["4200:4200"]
+    volumes: [prefect-data:/root/.prefect]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
+      interval: 5s
+      retries: 30
+
+  runner:
+    build: ./flows
+    environment:
+      <<: *lakehouse-env
+      PREFECT_API_URL: http://prefect-server:4200/api
+    volumes: [./:/app]   # live code: edit flows / dbt models without rebuilding
+    depends_on:
+      prefect-server: {condition: service_healthy}
+      warehouse-postgres: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+
+  streamlit:
+    build: ./dashboard
+    environment:
+      <<: *lakehouse-env
+      DUCKDB_PATH: /data/warehouse.duckdb
+    ports: ["8501:8501"]
+    volumes: [./include/data:/data:ro]
+    depends_on: [warehouse-postgres]
+
+volumes:
+  minio-data:
+  warehouse-pg:
+  prefect-data:
