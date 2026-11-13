@@ -26,3 +26,18 @@
 
 * Postgres: `postgresql+psycopg2://lakehouse:lakehouse@warehouse-postgres:5432/warehouse`
 * DuckDB: `duckdb:////data/warehouse.duckdb?access_mode=READ_ONLY`
+
+## Dashboards pre-cargados (`just superset-setup`)
+
+`scripts/superset_setup.py` usa solo la API REST de Superset (sin dependencias) y es idempotente:
+crea un dataset por cada tabla `gold.*` de **Warehouse Postgres**, los gráficos y dos dashboards.
+`just demo-initial` lo ejecuta solo, esperando a que dbt termine.
+
+* **Shop · Executive**: http://localhost:8088/superset/dashboard/shop-executive/
+  revenue, órdenes, ticket promedio y clientes activos; revenue diario; revenue por país y
+  `loyalty_tier`; top 10 clientes por lifetime value.
+* **Shop · Operations**: http://localhost:8088/superset/dashboard/shop-operations/
+  órdenes por estado; revenue por categoría; unidades por día; performance por producto.
+
+Después de `just demo-schema-evolution` volvé a correr `just superset-setup`: refresca los datasets
+para que aparezca `loyalty_tier` con valores reales.

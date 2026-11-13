@@ -68,8 +68,8 @@ ingest mode="append":
 
 # ─── classroom demos ────────────────────────────────────────────────────────
 
-# 1) first load: 200 customers, 40 products, 1000 orders
-demo-initial: (generate "initial") ingest
+# 1) first load: 200 customers, 40 products, 1000 orders (+ Superset dashboards once dbt is done)
+demo-initial: (generate "initial") ingest superset-setup
 
 # 2) updates + deletes + duplicates: raw grows, bronze stays 1 row per key
 demo-updates: (generate "updates") ingest
@@ -85,6 +85,12 @@ demo-idempotency: (generate "initial") ingest
 
 # Merge in place with Iceberg upsert instead of append. Run on a fresh stack: just nuke && just up
 demo-upsert: (generate "initial") (generate "updates") (ingest "upsert")
+
+# ─── dashboards ─────────────────────────────────────────────────────────────
+
+# Datasets + charts + "Shop · Executive" / "Shop · Operations" dashboards on gold.* (idempotent)
+superset-setup wait="900":
+    python3 scripts/superset_setup.py --wait {{ wait }}
 
 # ─── look inside Iceberg ────────────────────────────────────────────────────
 
