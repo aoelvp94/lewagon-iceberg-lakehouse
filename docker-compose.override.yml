@@ -1,6 +1,8 @@
 # Extra services next to the Astro containers (`astro dev start` merges this file).
+# They join Astro's `airflow` network so tasks reach them by service name.
 services:
   minio:
+    networks: [airflow]
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment:
@@ -10,6 +12,7 @@ services:
     volumes: [minio-data:/data]
 
   minio-init:
+    networks: [airflow]
     image: minio/mc:latest
     depends_on: [minio]
     environment:
@@ -19,6 +22,7 @@ services:
     entrypoint: ["/bin/sh", "/minio-init.sh"]
 
   warehouse-postgres:
+    networks: [airflow]
     image: postgres:18
     environment:
       POSTGRES_USER: lakehouse
@@ -30,7 +34,10 @@ services:
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
   superset:
-    build: ./infra/superset
+    networks: [airflow]
+    # Built by `just up` (the Astro CLI does not build images for override services)
+    image: lewagon/superset:local
+    pull_policy: never
     environment:
       SUPERSET_SECRET_KEY: change-me-lewagon-demo-only
       SUPERSET_CONFIG_PATH: /app/superset_config.py
