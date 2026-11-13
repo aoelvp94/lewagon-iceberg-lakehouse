@@ -39,11 +39,20 @@ def _pg_type(t: pa.DataType) -> str:
     return "text"
 
 
+def _copy_csv(cur, sql: str, data: bytes) -> None:
+    """COPY ... FROM STDIN with either driver (psycopg 3 ``copy`` / psycopg2 ``copy_expert``)."""
+    if hasattr(cur, "copy"):
+        with cur.copy(sql) as copy:
+            copy.write(data)
+    else:
+        cur.copy_expert(sql, io.BytesIO(data))
+
+
 def iceberg_to_postgres(
     *,
     catalog: Catalog,
     table_identifier: str,
-    pg_conn,  # a DB-API connection (psycopg2 from PostgresHook, or psycopg2.connect)
+    pg_conn,  # a DB-API connection: psycopg 3 (PostgresHook today) or psycopg2
     target_schema: str = "raw",
     target_table: str | None = None,
     snapshot_id: int | None = None,
@@ -65,8 +74,7 @@ def iceberg_to_postgres(
         for batch in reader:
             buf = io.BytesIO()
             pa_csv.write_csv(pa.Table.from_batches([batch]), buf)
-            buf.seek(0)
-            cur.copy_expert(f"copy {tmp} from stdin with (format csv, header true)", buf)
+            _copy_csv(cur, f"copy {tmp} from stdin with (format csv, header true)", buf.getvalue())
             rows += batch.num_rows
         # swap atomically so dashboards never see a half-loaded table
         cur.execute(f"drop table if exists {fq} cascade")
