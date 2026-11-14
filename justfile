@@ -1,9 +1,8 @@
-# Le Wagon · Iceberg lakehouse demo · Airflow (Astro CLI) + Cosmos + Superset
-# `just` lists every recipe. Host tools needed: astro, docker, uv, just.
+# Le Wagon · Iceberg lakehouse demo · Prefect 3 + prefect-dbt + Streamlit
+# `just` lists every recipe. Host tools needed: docker, uv, just.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-# Host-side view of the stack (scripts run on your laptop, not in containers)
 export MINIO_ENDPOINT := "http://localhost:9000"
 export LANDING_URI := "s3://landing/shop"
 
@@ -12,49 +11,35 @@ default:
 
 # ─── lifecycle ──────────────────────────────────────────────────────────────
 
-# First time only: create .env from the example
 setup:
-    @test -f .env || cp .env.example .env
     @mkdir -p include/data
-    @echo "✔ .env ready. Next: just up"
+    @echo "✔ nothing else to configure (credentials live in docker-compose.yml)"
 
-# Start Airflow + MinIO + Postgres + Superset
-up: setup build-images
-    @# start from stopped: on a running project the Astro CLI moves Airflow to a random port
-    -@astro dev stop >/dev/null 2>&1
-    astro dev start --wait 5m
+# Start Prefect server + runner + MinIO + Postgres + Streamlit + Jupyter
+up: setup
+    docker compose up -d --build
     @just urls
 
-# Build the images used by docker-compose.override.yml (the Astro CLI does not build them)
-build-images:
-    docker build -q -t lewagon/superset:local infra/superset
-    docker build -q -t lewagon/jupyter:local infra/jupyter
-    docker build -q -t lewagon/streamlit:local dashboard
-
-# Stop containers (keeps data)
 down:
-    astro dev stop
+    docker compose down
 
-# Stop and delete ALL data (Iceberg files, catalog, DuckDB, Superset)
+# Stop and delete ALL data
 nuke:
-    astro dev kill
+    docker compose down -v
     rm -f include/data/*.duckdb include/data/*.wal
 
-# Rebuild the image after changing requirements / Dockerfile
 restart:
-    astro dev restart
+    docker compose up -d --build --force-recreate runner streamlit
 
-logs:
-    astro dev logs -f
+logs service="runner":
+    docker compose logs -f {{ service }}
 
-# Where everything lives
 urls:
-    @echo "Airflow    http://localhost:8080"
+    @echo "Prefect    http://localhost:4200"
+    @echo "Streamlit  http://localhost:8501"
     @echo "MinIO      http://localhost:9001   (minio / minio123)"
-    @echo "Superset   http://localhost:8088   (admin / admin)"
     @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
     @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
-    @echo "Streamlit  http://localhost:8501   (also inside Airflow: nav → Lakehouse dashboard)"
 
 # Is every system up, and is there data in each layer? One line per check.
 check:
@@ -63,20 +48,18 @@ check:
     ko()  { printf "  \033[31m✘\033[0m %-22s %s\n" "$1" "$2"; }
     http() { [ "$(curl -s -o /dev/null -w '%{http_code}' "$2")" = 200 ] && ok "$1" "$2" || ko "$1" "$2 (not answering: just up)"; }
     echo "Services"
-    http "Airflow"   http://localhost:8080/api/v2/monitor/health
+    http "Prefect"   http://localhost:4200/api/health
     http "MinIO"     http://localhost:9000/minio/health/live
-    http "Superset"  http://localhost:8088/health
     http "Jupyter"   http://localhost:8888/api
     http "Streamlit" http://localhost:8501/_stcore/health
-    pg=$(docker ps -qf "name=warehouse-postgres")
-    docker exec "$pg" pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
+    docker compose exec -T warehouse-postgres pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
     echo "Data"
     n=$(uv run -q scripts/iceberg_inspect.py tables 2>/dev/null | grep -c '^raw\.')
     [ "$n" -ge 4 ] && ok "Iceberg raw tables" "$n tables" || ko "Iceberg raw tables" "$n tables (just demo-initial)"
-    n=$(docker exec "$pg" psql -tAq -U lakehouse -d warehouse -c "select count(*) from information_schema.tables where table_schema = 'gold'" 2>/dev/null)
-    [ "${n:-0}" -ge 5 ] && ok "Postgres gold" "$n tables" || ko "Postgres gold" "${n:-0} tables (wait for lakehouse_dbt_postgres)"
+    n=$(docker compose exec -T warehouse-postgres psql -tAq -U lakehouse -d warehouse -c "select count(*) from information_schema.tables where table_schema = 'gold'" 2>/dev/null)
+    [ "${n:-0}" -ge 5 ] && ok "Postgres gold" "$n tables" || ko "Postgres gold" "${n:-0} tables (wait for the dbt-postgres subflow)"
     n=$(uv run -q --with duckdb python -c "import duckdb; print(duckdb.connect('include/data/warehouse.duckdb', read_only=True).sql(\"select count(*) from information_schema.tables where table_schema = 'gold'\").fetchall()[0][0])" 2>/dev/null)
-    [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for lakehouse_dbt_duckdb, or file locked by dbt)"
+    [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for the dbt-duckdb subflow, or file locked by dbt)"
 
 # ─── data generation + ingestion ────────────────────────────────────────────
 
@@ -84,18 +67,16 @@ check:
 generate scenario="initial":
     uv run scripts/generate_data.py {{ scenario }}
 
-# Run the transfer operators (landing -> Iceberg). mode: append | upsert
+# Run the deployment: ingest (transfer tasks) -> dbt DuckDB -> copy + dbt Postgres. mode: append | upsert
 ingest mode="append":
-    astro dev run dags unpause lakehouse_ingest >/dev/null
-    astro dev run dags unpause lakehouse_dbt_duckdb >/dev/null
-    astro dev run dags unpause lakehouse_dbt_postgres >/dev/null
-    astro dev run dags trigger lakehouse_ingest --conf '{"mode": "{{ mode }}"}'
-    @echo "→ follow it at http://localhost:8080 (dbt DAGs start automatically after it)"
+    docker compose exec runner prefect deployment run 'lakehouse-pipeline/lakehouse' \
+      --param mode={{ mode }} --watch
+    @echo "→ Streamlit: http://localhost:8501"
 
 # ─── classroom demos ────────────────────────────────────────────────────────
 
-# 1) first load: 200 customers, 40 products, 1000 orders (+ Superset dashboards once dbt is done)
-demo-initial: (generate "initial") ingest superset-setup
+# 1) first load: 200 customers, 40 products, 1000 orders
+demo-initial: (generate "initial") ingest
 
 # 2) updates + deletes + duplicates: raw grows, bronze stays 1 row per key
 demo-updates: (generate "updates") ingest
@@ -111,16 +92,6 @@ demo-idempotency: (generate "initial") ingest
 
 # Merge in place with Iceberg upsert instead of append. Run on a fresh stack: just nuke && just up
 demo-upsert: (generate "initial") (generate "updates") (ingest "upsert")
-
-# ─── dashboards ─────────────────────────────────────────────────────────────
-
-# Datasets + charts + "Shop · Executive" / "Shop · Operations" dashboards on gold.* (idempotent)
-superset-setup wait="900":
-    python3 scripts/superset_setup.py --wait {{ wait }}
-
-# Streamlit gold dashboard, embedded in Airflow by plugins/lakehouse_dashboard.py
-dashboard:
-    open "http://localhost:8080/plugin/lakehouse-dashboard" || echo "http://localhost:8080/plugin/lakehouse-dashboard"
 
 # ─── look inside Iceberg ────────────────────────────────────────────────────
 
@@ -174,10 +145,14 @@ notebook:
 
 # Run the notebook headless inside the container (checks every snippet still works)
 notebook-check:
-    docker exec $(docker ps -qf "name=jupyter") jupyter nbconvert --to notebook --execute \
+    docker compose exec -T jupyter jupyter nbconvert --to notebook --execute \
       --output /tmp/explore_lakehouse.out.ipynb notebooks/explore_lakehouse.ipynb
 
-# ─── dbt from the host (handy to debug models without Airflow) ──────────────
+# Streamlit gold dashboard
+dashboard:
+    open "http://localhost:8501" || echo "http://localhost:8501"
+
+# ─── dbt from the host (handy to debug models without the orchestrator) ──────────────
 
 # e.g. just dbt build --target postgres --select silver
 dbt *args:
@@ -200,10 +175,6 @@ test:
     uv run --with "pyiceberg[sql-sqlite,pyarrow]>=0.11.1" --with fsspec --with pytest \
       pytest tests/lakehouse -q
 
-# DAG integrity tests inside the Astro image
-test-dags:
-    astro dev pytest tests/dags
-
 # dbt data tests + unit tests on both engines
 test-dbt:
     just dbt build --target duckdb --select "test_type:unit"
@@ -214,7 +185,7 @@ test-dbt:
 
 demo-all:
     just demo-initial
-    @read -p "Initial load triggered. Check Airflow, then press Enter for updates… " _
+    @read -p "Initial load done. Check Prefect + Streamlit, then press Enter for updates… " _
     just demo-updates
     @read -p "Press Enter for schema evolution… " _
     just demo-schema-evolution

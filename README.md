@@ -1,4 +1,4 @@
-# Le Wagon · Lakehouse con Iceberg, dbt y tres orquestadores
+# Le Wagon · Lakehouse con Iceberg, dbt y tres orquestadores · rama `prefect`
 
 Pipeline de punta a punta para clase:
 
@@ -9,12 +9,12 @@ La lógica de negocio es la misma en todas las ramas; lo único que cambia es el
 | Rama | Orquestador | dbt | BI |
 |---|---|---|---|
 | `main` | **Airflow 3.3** (Astro CLI) | Cosmos (`DbtTaskGroup`) | **Superset** |
-| `prefect` | **Prefect 3** | `prefect-dbt` (`PrefectDbtRunner`) | **Streamlit** |
+| `prefect` ← **estás acá** | **Prefect 3** | `prefect-dbt` (`PrefectDbtRunner`) | **Streamlit** |
 | `kestra` | **Kestra** | `io.kestra.plugin.dbt.cli.DbtCLI` | **Metabase** |
 
 Todo se maneja con `just` (`just` a secas lista las recetas).
 
-> 👩‍🎓 **Estudiantes: empiecen por la [guía práctica](docs/guia-estudiantes.md)**: recorrido por cada sistema (MinIO, Airflow, Iceberg, dbt, Postgres, DuckDB, Superset, Streamlit, Jupyter), laboratorio con los 4 escenarios y desafíos.
+> 👩‍🎓 **Estudiantes: empiecen por la [guía práctica](docs/guia-estudiantes.md)**: recorrido por cada sistema (MinIO, Prefect, Iceberg, dbt, Postgres, DuckDB, Streamlit, Jupyter), laboratorio con los 4 escenarios y desafíos.
 
 ---
 
@@ -23,15 +23,16 @@ Todo se maneja con `just` (`just` a secas lista las recetas).
 ```mermaid
 flowchart LR
     gen["scripts/generate_data.py<br/>(sistema fuente falso)"] -->|batch=000N| landing[(MinIO<br/>s3://landing/shop)]
-    landing -->|LandingToIcebergOperator| raw[(Iceberg raw.*<br/>s3://warehouse + catálogo SQL en Postgres)]
+    landing -->|task landing_to_iceberg| raw[(Iceberg raw.*<br/>s3://warehouse + catálogo SQL en Postgres)]
     raw -->|plugin iceberg de dbt-duckdb| duck[(DuckDB<br/>bronze · silver · gold)]
-    raw -->|IcebergToPostgresOperator| pgraw[(Postgres raw.*)]
+    raw -->|task iceberg_to_pg| pgraw[(Postgres raw.*)]
     pgraw --> pg[(Postgres<br/>bronze · silver · gold)]
-    duck --> bi[Superset]
+    duck --> bi[Streamlit]
     pg --> bi
 ```
 
-* **Transfer operator** (`include/operators/transfers.py`): `LandingToIcebergOperator` sigue la convención de los providers de Airflow (`<Origen>To<Destino>Operator`). Toda la lógica está en `include/lakehouse/` (pyarrow + fsspec + pyiceberg, sin pandas) para que Prefect y Kestra ejecuten exactamente el mismo código.
+* **Transfer**: en `main` es el `LandingToIcebergOperator` de Airflow; acá es la task `landing_to_iceberg` (`flows/lakehouse.py`). Las dos llaman a la misma función, `include/lakehouse/ingest.py` (pyarrow + fsspec + pyiceberg, sin pandas).
+* **Flujo Prefect**: `lakehouse-pipeline` → tasks de ingesta mapeadas por entidad (en paralelo) → subflow `dbt-duckdb` → subflow `dbt-postgres` (copias Iceberg→Postgres + dbt). `PrefectDbtRunner` convierte cada nodo de dbt en una task, como hace Cosmos en Airflow.
 * **Iceberg**: catálogo SQL de pyiceberg guardado en Postgres; datos y metadata en MinIO. Cada batch = un snapshot (con la propiedad `lakehouse.batch-id`), lo que da idempotencia y _time travel_ por batch.
 * **Dos motores, un proyecto dbt** (`include/dbt/shop`, targets `duckdb` y `postgres`):
   * DuckDB lee Iceberg **directo** → estilo _lakehouse_.
@@ -56,34 +57,30 @@ erDiagram
 
 ## Requisitos
 
-* Docker, [Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli), [uv](https://docs.astral.sh/uv/), [just](https://just.systems)
+* Docker, [uv](https://docs.astral.sh/uv/), [just](https://just.systems)
 * ~6 GB de RAM libres para Docker
 
 ## Arranque rápido
 
 ```bash
-just setup        # crea .env
-just up           # Airflow + MinIO + Postgres + Superset + Jupyter + Streamlit
+just up           # Prefect server + runner + MinIO + Postgres + Streamlit + Jupyter
 just check        # ✔ / ✘ por cada sistema y cada capa de datos
-just demo-initial # genera el batch inicial, dispara la ingesta y arma los dashboards de Superset
+just demo-initial # genera el batch inicial y corre el deployment (espera a que termine)
 ```
-
-`lakehouse_ingest` actualiza el asset `iceberg_raw`, y eso dispara solos `lakehouse_dbt_duckdb` y `lakehouse_dbt_postgres`.
 
 | Servicio | URL | Usuario |
 |---|---|---|
-| Airflow | http://localhost:8080 | — |
+| Prefect | http://localhost:4200 | — |
+| Streamlit | http://localhost:8501 | — |
 | MinIO | http://localhost:9001 | minio / minio123 |
-| Superset | http://localhost:8088 | admin / admin |
 | Postgres (warehouse) | localhost:5433 | lakehouse / lakehouse |
 | Jupyter | http://localhost:8888 | sin token |
-| Streamlit | http://localhost:8501 (y dentro de Airflow) | — |
 
 ---
 
 ## Guion de clase
 
-Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno, mirá Airflow, Iceberg y los dashboards.
+Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno, mirá Prefect (flow runs + artifact `ingest-summary`), Iceberg y Streamlit.
 
 | # | Comando | Qué pasa | Cómo verlo |
 |---|---|---|---|
@@ -91,7 +88,7 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 | 2 | `just demo-updates` | Updates (emails, países, estados de pedido, precios), 3 deletes (GDPR) y 5 filas duplicadas exactas. `raw` crece; `bronze` sigue con 1 fila por clave. | `just dedup-check` · `just history customers "customer_id = 7"` · `just time-travel customers` |
 | 3 | `just demo-schema-evolution` | La fuente pasa a exportar Parquet: aparece `loyalty_tier` en customers y `quantity` pasa de `int` a `long`. Iceberg evoluciona el esquema sin reescribir datos. | `just schema-history customers` · `just schema order_items` · gold `gold_revenue_by_country_tier` deja de decir `unknown` |
 | 4 | `just demo-late-arriving` | Llegan eventos **viejos** después de los nuevos. Bronze debe ignorarlos porque ordena por `updated_at`. | Test singular `assert_bronze_dedup_keeps_latest` en verde · `gold_order_status_funnel` no cambia |
-| 5 | `just demo-idempotency` | Re-ejecutar un batch ya cargado no escribe nada (snapshot property). | Log del task: `batches_skipped=['0001']` · `just snapshots` sin snapshot nuevo |
+| 5 | `just demo-idempotency` | Re-ejecutar un batch ya cargado no escribe nada (snapshot property). | Artifact `ingest-summary`: `batches_skipped=['0001']` · `just snapshots` sin snapshot nuevo |
 | 6 | `just nuke && just up && just demo-upsert` | Mismos batches 1 y 2 pero con `table.upsert()` (merge por PK) en vez de append, en un stack limpio. Discutir: ¿historia en raw o estado actual? | `just snapshots orders` (operación `overwrite`/`delete`) |
 
 `just demo-all` corre 1→4 con pausas.
@@ -110,53 +107,47 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 | Comando | Qué prueba |
 |---|---|
 | `just test` | Lógica de ingesta sin Docker (catálogo SQLite + archivos locales): carga inicial, idempotencia, historia + time travel, columna nueva, `int→long`, upsert, cambio incompatible. |
-| `just test-dags` | Integridad de los DAGs dentro de la imagen de Astro. |
 | `just test-dbt` | Unit test de dbt (`gold_daily_revenue`) + data tests (unique, not_null, relationships, accepted_values, dedup) en ambos motores. |
 
-## Superset
+## Streamlit
 
-Al arrancar ya están creadas las conexiones **Warehouse Postgres** y **Warehouse DuckDB** (solo lectura). `just demo-initial` (o `just superset-setup`) crea los dashboards **Shop · Executive** y **Shop · Operations** sobre las tablas `gold.*`. Ver [`docs/superset.md`](docs/superset.md).
+`dashboard/app.py` (`just dashboard`): KPIs, revenue diario, funnel de estados, revenue por tier y por país, top clientes y top productos. `dashboard/` está montado en el contenedor: si editás `app.py`, la página se recarga sola. El selector de la barra lateral cambia entre **DuckDB** y **Postgres**: mismos modelos gold, dos motores. Las consultas devuelven tablas Arrow (sin pandas en nuestro código).
 
-> DuckDB admite un solo escritor: si Superset da error de _lock_ mientras corre dbt, esperá a que termine el DAG y refrescá.
-
-## Dashboard de Streamlit dentro de Airflow (plugin)
-
-`plugins/lakehouse_dashboard.py` es un plugin de Airflow 3 que agrega una *external view*: aparece
-**Lakehouse dashboard** en la barra lateral de Airflow y muestra embebida (iframe) la app de
-Streamlit `dashboard/app.py`, que lee las tablas gold de DuckDB o de Postgres (se elige en la barra
-lateral). `just dashboard` la abre en http://localhost:8080/plugin/lakehouse-dashboard.
-
-* El plugin no contiene lógica: solo le dice a Airflow dónde vive la app (`href`) y en qué ruta
-  embeberla (`url_route`). Airflow carga los plugins al arrancar: después de tocarlo, `just up`.
-* `dashboard/` está montado en el contenedor: si editás `app.py`, la página se recarga sola.
+> DuckDB admite un solo escritor: si Streamlit muestra un error de _lock_ mientras corre dbt, esperá a que termine el flow y apretá `R`.
 
 ## Jupyter
 
-`notebooks/explore_lakehouse.ipynb` (`just notebook`): consultas con `jupysql` a Postgres y DuckDB,
-archivos de MinIO con `s3fs` + `pyarrow`, DuckDB leyendo MinIO con `httpfs` y time travel con
-`pyiceberg`. `just notebook-check` ejecuta todo el notebook para verificar que sigue andando.
+`notebooks/explore_lakehouse.ipynb` (`just notebook`): consultas con `jupysql` a Postgres y DuckDB, archivos de MinIO con `s3fs` + `pyarrow`, DuckDB leyendo MinIO con `httpfs` y time travel con `pyiceberg`. `just notebook-check` ejecuta todo el notebook para verificar que sigue andando.
+
+## Airflow vs Prefect (para la discusión)
+
+| | Airflow (`main`) | Prefect (esta rama) |
+|---|---|---|
+| Unidad | DAG declarado, parseado por el scheduler | Funciones Python decoradas (`@flow`, `@task`) |
+| Fan-out por entidad | dynamic task mapping (`.partial().expand()`) | `task.map(...)` |
+| Encadenar dbt tras la ingesta | Assets (data-aware scheduling) entre DAGs | subflows dentro del mismo flow |
+| dbt | Cosmos: 1 task por modelo + tests | `PrefectDbtRunner`: 1 task por nodo |
+| Reutilización | operador custom (`LandingToIcebergOperator`) | task que envuelve la misma función |
 
 ## Estructura
 
 ```
-├── dags/                      # Airflow: ingest + dbt DuckDB + dbt Postgres
+├── flows/                     # Prefect: flow + Dockerfile del runner
+├── dashboard/                 # Streamlit
+├── notebooks/                 # Jupyter: jupysql, MinIO, pyiceberg
 ├── include/
 │   ├── lakehouse/             # lógica compartida (sin orquestador)
-│   ├── operators/transfers.py # LandingToIcebergOperator, IcebergToPostgresOperator
 │   ├── dbt/shop/              # proyecto dbt (bronze/silver/gold, 2 targets)
 │   └── data/                  # warehouse.duckdb (ignorado por git)
-├── plugins/                   # plugin de Airflow: dashboard de Streamlit embebido
-├── dashboard/                 # app de Streamlit sobre gold (DuckDB / Postgres)
-├── notebooks/                 # Jupyter: jupysql, MinIO, pyiceberg
-├── scripts/                   # generador de datos, inspector de Iceberg, setup de Superset
-├── infra/                     # init de Postgres/MinIO, imágenes de Superset y Jupyter
-├── tests/                     # pytest (ingesta) + integridad de DAGs
-├── docker-compose.override.yml
+├── scripts/                   # generador de datos + inspector de Iceberg (uv)
+├── infra/                     # init de Postgres/MinIO, imagen de Jupyter
+├── tests/                     # pytest (ingesta)
+├── docker-compose.yml
 └── justfile
 ```
 
 ## Versiones
 
-Astro Runtime 3.3 (Airflow 3.3) · astronomer-cosmos ≥ 1.15 · pyiceberg ≥ 0.11.1 · dbt-core 1.x + dbt-duckdb + dbt-postgres · DuckDB ≥ 1.5.4 · Postgres 18.
+Prefect 3 · prefect-dbt ≥ 0.7 · Streamlit · pyiceberg ≥ 0.11.1 · dbt-core 1.x + dbt-duckdb + dbt-postgres · DuckDB ≥ 1.5.4 · Postgres 18.
 
-> dbt Fusion (v2) todavía no se usa acá: Cosmos y el plugin de Iceberg de dbt-duckdb corren sobre dbt Core.
+> dbt Fusion (v2) todavía no se usa acá: `prefect-dbt` y el plugin de Iceberg de dbt-duckdb corren sobre dbt Core.
