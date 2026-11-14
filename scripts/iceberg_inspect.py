@@ -85,8 +85,8 @@ def cmd_schema_history(cat, args):
 def cmd_peek(cat, args):
     t = cat.load_table(args.table)
     scan = t.scan(row_filter=args.where, limit=args.limit) if args.where else t.scan(limit=args.limit)
-    tbl = scan.to_arrow()
-    print(tbl.to_string(preview_cols=20) if hasattr(tbl, "to_string") else tbl)
+    for row in scan.to_arrow().to_pylist():  # one line per row, easier to read than Arrow's columns
+        print({k: (v.isoformat(sep=" ") if isinstance(v, dt.datetime) else v) for k, v in row.items()})
 
 
 def main():

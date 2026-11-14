@@ -56,6 +56,28 @@ urls:
     @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
     @echo "Streamlit  http://localhost:8501   (also inside Airflow: nav → Lakehouse dashboard)"
 
+# Is every system up, and is there data in each layer? One line per check.
+check:
+    #!/usr/bin/env bash
+    ok()  { printf "  \033[32m✔\033[0m %-22s %s\n" "$1" "$2"; }
+    ko()  { printf "  \033[31m✘\033[0m %-22s %s\n" "$1" "$2"; }
+    http() { [ "$(curl -s -o /dev/null -w '%{http_code}' "$2")" = 200 ] && ok "$1" "$2" || ko "$1" "$2 (not answering: just up)"; }
+    echo "Services"
+    http "Airflow"   http://localhost:8080/api/v2/monitor/health
+    http "MinIO"     http://localhost:9000/minio/health/live
+    http "Superset"  http://localhost:8088/health
+    http "Jupyter"   http://localhost:8888/api
+    http "Streamlit" http://localhost:8501/_stcore/health
+    pg=$(docker ps -qf "name=warehouse-postgres")
+    docker exec "$pg" pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
+    echo "Data"
+    n=$(uv run -q scripts/iceberg_inspect.py tables 2>/dev/null | grep -c '^raw\.')
+    [ "$n" -ge 4 ] && ok "Iceberg raw tables" "$n tables" || ko "Iceberg raw tables" "$n tables (just demo-initial)"
+    n=$(docker exec "$pg" psql -tAq -U lakehouse -d warehouse -c "select count(*) from information_schema.tables where table_schema = 'gold'" 2>/dev/null)
+    [ "${n:-0}" -ge 5 ] && ok "Postgres gold" "$n tables" || ko "Postgres gold" "${n:-0} tables (wait for lakehouse_dbt_postgres)"
+    n=$(uv run -q --with duckdb python -c "import duckdb; print(duckdb.connect('include/data/warehouse.duckdb', read_only=True).sql(\"select count(*) from information_schema.tables where table_schema = 'gold'\").fetchall()[0][0])" 2>/dev/null)
+    [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for lakehouse_dbt_duckdb, or file locked by dbt)"
+
 # ─── data generation + ingestion ────────────────────────────────────────────
 
 # Drop a source batch in the landing zone: initial | updates | schema-evolution | late-arriving | all

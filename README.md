@@ -14,6 +14,8 @@ La lógica de negocio es la misma en todas las ramas; lo único que cambia es el
 
 Todo se maneja con `just` (`just` a secas lista las recetas).
 
+> 👩‍🎓 **Estudiantes: empiecen por la [guía práctica](docs/guia-estudiantes.md)**: recorrido por cada sistema (MinIO, Airflow, Iceberg, dbt, Postgres, DuckDB, Superset, Streamlit, Jupyter), laboratorio con los 4 escenarios y desafíos.
+
 ---
 
 ## Arquitectura
@@ -62,6 +64,7 @@ erDiagram
 ```bash
 just setup        # crea .env
 just up           # Airflow + MinIO + Postgres + Superset + Jupyter + Streamlit
+just check        # ✔ / ✘ por cada sistema y cada capa de datos
 just demo-initial # genera el batch inicial, dispara la ingesta y arma los dashboards de Superset
 ```
 
