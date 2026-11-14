@@ -1,4 +1,5 @@
-# Kestra flavour: Kestra (local mode) + MinIO + Postgres + Metabase.
+# Kestra flavour: Kestra (local mode) + MinIO + Postgres + Metabase + Jupyter.
+# Host ports come from .env (see `just side-by-side`); defaults are the standard ones.
 name: lakehouse-kestra
 
 networks:
@@ -10,7 +11,7 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment: {MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123}
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["${MINIO_PORT:-9000}:9000", "${MINIO_CONSOLE_PORT:-9001}:9001"]
     volumes: [minio-data:/data]
 
   minio-init:
@@ -23,7 +24,7 @@ services:
   warehouse-postgres:
     image: postgres:18
     environment: {POSTGRES_USER: lakehouse, POSTGRES_PASSWORD: lakehouse, POSTGRES_DB: warehouse}
-    ports: ["5433:5432"]
+    ports: ["${PG_PORT:-5433}:5432"]
     volumes:
       - warehouse-pg:/var/lib/postgresql
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -38,11 +39,14 @@ services:
     image: kestra/kestra:latest
     user: root
     command: server local
-    ports: ["8080:8080"]
+    ports: ["${KESTRA_PORT:-8080}:8080"]
     environment:
+      JAVA_OPTS: -Xmx1g   # keep the JVM laptop-sized (several stacks may run side by side)
       ENV_REPO_DIR: ${PWD}   # host path of this repo, mounted into task containers as /app
       KESTRA_CONFIGURATION: |
         kestra:
+          tutorialFlows:
+            enabled: false   # only our flows (pushed by `just deploy`)
           server:
             basic-auth:
               enabled: true
@@ -56,32 +60,49 @@ services:
               - type: io.kestra.plugin.scripts.runner.docker.Docker
                 values:
                   volume-enabled: true
-        micronaut:
-          io:
-            watch:
-              enabled: true
-              paths:
-                - /flows
     volumes:
       - kestra-data:/app/storage
+      - kestra-db:/app/data        # local-mode database: flows, executions, logs survive restarts
       - /var/run/docker.sock:/var/run/docker.sock
       - /tmp/kestra-wd:/tmp/kestra-wd
-      - ./flows:/flows
     depends_on: [warehouse-postgres, minio-init, lakehouse-runner]
 
   metabase:
     image: metabase/metabase:latest
-    ports: ["3000:3000"]
+    ports: ["${METABASE_PORT:-3000}:3000"]
     environment:
       MB_PLUGINS_DIR: /plugins
+      JAVA_OPTS: -Xmx1g   # keep the JVM laptop-sized
     volumes:
       - metabase-data:/metabase-data
       - ./infra/metabase/plugins:/plugins     # optional DuckDB driver: just metabase-duckdb-driver
       - ./include/data:/data:ro
     depends_on: [warehouse-postgres]
 
+  jupyter:
+    build: ./infra/jupyter
+    # Local classroom demo only: no token / password
+    command: start-notebook.py --IdentityProvider.token='' --ServerApp.password=''
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+      PYICEBERG_CATALOG__LAKEHOUSE__TYPE: sql
+      PYICEBERG_CATALOG__LAKEHOUSE__URI: postgresql+psycopg2://lakehouse:lakehouse@warehouse-postgres:5432/iceberg_catalog
+      PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE: s3://warehouse
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID: minio
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY: minio123
+      PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION: us-east-1
+    ports: ["${JUPYTER_PORT:-8888}:8888"]
+    depends_on: [warehouse-postgres, minio]
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./include/data:/data:ro
+
 volumes:
   minio-data:
   warehouse-pg:
   kestra-data:
+  kestra-db:
   metabase-data:

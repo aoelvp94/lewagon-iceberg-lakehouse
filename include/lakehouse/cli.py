@@ -1,5 +1,6 @@
 """Command-line entry points, for orchestrators that run *commands* (Kestra, cron, CI...).
 
+    python -m include.lakehouse.cli prepare-catalog
     python -m include.lakehouse.cli ingest --entity customers --mode append
     python -m include.lakehouse.cli to-postgres --table raw.customers
 
@@ -17,7 +18,7 @@ import os
 import fsspec
 import psycopg2
 
-from include.lakehouse.catalog import get_catalog
+from include.lakehouse.catalog import get_catalog, prepare_catalog
 from include.lakehouse.entities import ENTITIES
 from include.lakehouse.ingest import land_to_iceberg
 from include.lakehouse.serve import iceberg_to_postgres
@@ -31,6 +32,11 @@ def _landing():
         client_kwargs={"endpoint_url": os.environ.get("MINIO_ENDPOINT", "http://minio:9000")},
     )
     return fs, os.environ.get("LANDING_URI", "s3://landing/shop").removeprefix("s3://")
+
+
+def cmd_prepare_catalog(args) -> dict:
+    prepare_catalog()  # once, before the parallel loads (they would race creating it)
+    return {"catalog": "ready"}
 
 
 def cmd_ingest(args) -> dict:
@@ -56,13 +62,15 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(prog="lakehouse")
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("prepare-catalog")
     i = sub.add_parser("ingest")
     i.add_argument("--entity", required=True, choices=list(ENTITIES))
     i.add_argument("--mode", default="append", choices=["append", "upsert"])
     t = sub.add_parser("to-postgres")
     t.add_argument("--table", required=True)
     args = p.parse_args()
-    result = {"ingest": cmd_ingest, "to-postgres": cmd_to_postgres}[args.cmd](args)
+    commands = {"prepare-catalog": cmd_prepare_catalog, "ingest": cmd_ingest, "to-postgres": cmd_to_postgres}
+    result = commands[args.cmd](args)
     print(json.dumps(result))
 
 

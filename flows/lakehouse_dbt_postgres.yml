@@ -6,44 +6,43 @@ description: |
 
 tasks:
   - id: copy_raw
-    type: io.kestra.plugin.core.flow.ForEach
+    type: io.kestra.plugin.core.flow.Loop
     values: ["raw.customers", "raw.products", "raw.orders", "raw.order_items"]
     concurrencyLimit: 4
     tasks:
       - id: iceberg_to_postgres
         type: io.kestra.plugin.scripts.shell.Commands
+        # Every task runs in the lakehouse-runner image with the repo mounted at /app
+        containerImage: lakehouse-runner:local
+        taskRunner:
+          type: io.kestra.plugin.scripts.runner.docker.Docker
+          pullPolicy: NEVER
+          networkMode: lakehouse
+          volumes:
+            - "{{ envs.repo_dir }}:/app"
         commands:
-          - python -m include.lakehouse.cli to-postgres --table {{ taskrun.value }}
+          - python -m include.lakehouse.cli to-postgres --table {{ item.value }}
 
   - id: dbt_build_postgres
     type: io.kestra.plugin.dbt.cli.DbtCLI
+    containerImage: lakehouse-runner:local
+    taskRunner:
+      type: io.kestra.plugin.scripts.runner.docker.Docker
+      pullPolicy: NEVER
+      networkMode: lakehouse
+      volumes:
+        - "{{ envs.repo_dir }}:/app"
+    parseRunResults: false
     commands:
       - dbt build --target postgres --project-dir /app/include/dbt/shop --profiles-dir /app/include/dbt/shop
 
 triggers:
   - id: after_ingest
     type: io.kestra.plugin.core.trigger.Flow
-    preconditions:
-      id: ingest_succeeded
-      flows:
-        - namespace: lewagon.lakehouse
-          flowId: lakehouse_ingest
-          states: [SUCCESS]
+    dependsOn:   # runs when lakehouse_ingest ends in SUCCESS (like an Airflow asset)
+      - namespace: lewagon.lakehouse
+        flowId: lakehouse_ingest
+        states: [SUCCESS]
 
 concurrency:
   limit: 1
-
-pluginDefaults:
-  - type: io.kestra.plugin.scripts
-    values: &runner
-      containerImage: lakehouse-runner:local
-      taskRunner:
-        type: io.kestra.plugin.scripts.runner.docker.Docker
-        pullPolicy: NEVER
-        networkMode: lakehouse
-        volumes:
-          - "{{ envs.repo_dir }}:/app"
-  - type: io.kestra.plugin.dbt
-    values:
-      <<: *runner
-      parseRunResults: false
