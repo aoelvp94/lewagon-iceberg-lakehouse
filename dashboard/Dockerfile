@@ -1,5 +1,4 @@
-# Streamlit dashboard over the gold layer (DuckDB file + Postgres). Embedded in Airflow by
-# plugins/lakehouse_dashboard.py. Built by `just build-images`.
+# Streamlit dashboard over the gold layer (DuckDB file + Postgres). Built by `just up`.
 FROM python:3.13-slim
 RUN pip install --no-cache-dir "streamlit>=1.50" "duckdb>=1.5.4" "pyarrow>=21" "psycopg2-binary>=2.9"
 WORKDIR /app

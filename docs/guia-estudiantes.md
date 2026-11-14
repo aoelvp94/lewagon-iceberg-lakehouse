@@ -9,7 +9,7 @@ corrés los 4 escenarios de datos mirando qué cambia en cada uno, y al final ha
 
 ## 0. Antes de empezar
 
-Necesitás Docker, [Astro CLI](https://www.astronomer.io/docs/astro/cli/install-cli), [uv](https://docs.astral.sh/uv/) y [just](https://just.systems).
+Necesitás Docker, [uv](https://docs.astral.sh/uv/) y [just](https://just.systems). Esta es la rama **`prefect`**: el orquestador es Prefect 3 y el BI es Streamlit.
 
 ```bash
 just setup          # crea .env (solo la primera vez)
@@ -24,11 +24,10 @@ Si es la primera vez, todavía no hay datos: `just check` va a marcar ✘ en *Da
 | Sistema | Para qué está | URL | Usuario |
 |---|---|---|---|
 | **MinIO** | Object storage (S3): archivos fuente y archivos de Iceberg | http://localhost:9001 | minio / minio123 |
-| **Airflow** | Orquesta: ingesta → Iceberg → dbt | http://localhost:8080 | — |
+| **Prefect** | Orquesta: ingesta → Iceberg → dbt | http://localhost:4200 | — |
 | **Postgres** | Catálogo de Iceberg + warehouse (raw, bronze, silver, gold) | localhost:5433 | lakehouse / lakehouse |
 | **DuckDB** | El mismo medallion, construido leyendo Iceberg directo | `include/data/warehouse.duckdb` | — |
-| **Superset** | BI: dashboards sobre `gold.*` | http://localhost:8088 | admin / admin |
-| **Streamlit** | Dashboard en Python, embebido en Airflow | http://localhost:8501 | — |
+| **Streamlit** | BI: dashboard en Python sobre `gold.*` | http://localhost:8501 | — |
 | **Jupyter** | Notebooks para consultar todo con SQL y Python | http://localhost:8888 | sin token |
 
 `just urls` imprime esta lista.
@@ -36,15 +35,15 @@ Si es la primera vez, todavía no hay datos: `just check` va a marcar ✘ en *Da
 ### El recorrido de un dato
 
 ```
-generate_data.py ──► MinIO landing/ ──► LandingToIcebergOperator ──► Iceberg raw.* (MinIO warehouse/ + catálogo en Postgres)
+generate_data.py ──► MinIO landing/ ──► task landing_to_iceberg ──► Iceberg raw.* (MinIO warehouse/ + catálogo en Postgres)
                                                                           │
                                 ┌─────────────────────────────────────────┴──────────────────────┐
                                 ▼                                                                ▼
-                 dbt + DuckDB (lee Iceberg directo)                       IcebergToPostgresOperator → Postgres raw.* → dbt + Postgres
+                 dbt + DuckDB (lee Iceberg directo)                       task iceberg_to_pg → Postgres raw.* → dbt + Postgres
                                 │                                                                │
                       bronze → silver → gold                                           bronze → silver → gold
                                 │                                                                │
-                     Streamlit, Jupyter                                       Superset, Streamlit, Jupyter
+                     Streamlit, Jupyter                                            Streamlit, Jupyter
 ```
 
 ---
@@ -55,8 +54,8 @@ generate_data.py ──► MinIO landing/ ──► LandingToIcebergOperator ─
 just demo-initial
 ```
 
-Esto (1) escribe el batch `0001` en MinIO, (2) dispara `lakehouse_ingest` en Airflow y (3) espera a
-que dbt termine para crear los dashboards de Superset. Mientras tanto, abrí Airflow y mirá cómo corre.
+Esto (1) escribe el batch `0001` en MinIO y (2) corre el deployment `lakehouse-pipeline/lakehouse` en
+Prefect, esperando a que termine (`--watch`). Mientras tanto, abrí Prefect y mirá cómo corre.
 
 Cuando termine: `just check` debería estar todo en ✔.
 
@@ -85,33 +84,31 @@ docker exec -i $(docker ps -qf "name=warehouse-postgres") \
   psql -U lakehouse -d iceberg_catalog -c "select table_name, metadata_location from iceberg_tables"
 ```
 
-### 2.2 Airflow: la orquestación
+### 2.2 Prefect: la orquestación
 
-Entrá a http://localhost:8080.
+Entrá a http://localhost:4200 y abrí el flow run más reciente de **lakehouse-pipeline**
+(el código está en `flows/lakehouse.py`: son funciones Python con `@flow` y `@task`).
 
-1. **Dags** → `lakehouse_ingest` → pestaña **Graph**:
-   * `prepare_catalog` crea el namespace `raw` una sola vez (si las 4 cargas lo hicieran en paralelo, chocarían).
-   * `landing_to_iceberg` es **una sola tarea con *dynamic task mapping***: Airflow crea una instancia
-     por entidad en tiempo de ejecución. Hacé clic y mirá la pestaña **Mapped Tasks**: cada una tiene de
-     nombre la entidad (`customers`, `orders`, ...).
-   * `summarize` recibe la lista con el resultado de cada instancia mapeada. Abrí su **Log**.
-2. **Assets** → `iceberg_raw`. Lo actualiza `summarize`, y eso dispara solos `lakehouse_dbt_duckdb` y
-   `lakehouse_dbt_postgres` (*data-aware scheduling*: nadie los programa por horario).
-3. `lakehouse_dbt_postgres` → Graph: `iceberg_to_postgres` (también mapeada) copia Iceberg a Postgres,
-   después `create_medallion_schemas`, y después un grupo de tareas por modelo dbt (lo arma **Cosmos**).
-4. En la barra lateral: **Lakehouse dashboard**. Es un **plugin de Airflow** (`plugins/lakehouse_dashboard.py`)
-   que embebe la app de Streamlit. Abrí el archivo: son ~20 líneas.
+1. `prepare_iceberg_catalog` crea el namespace `raw` una sola vez (si las 4 cargas lo hicieran en paralelo, chocarían).
+2. `landing-to-iceberg-<entidad>`: **una task por entidad**, creadas con `landing_to_iceberg.map(...)` y
+   corriendo en paralelo. Las 4 llaman a la misma función que usa Airflow en `main` (`include/lakehouse/ingest.py`).
+3. **Artifacts** → `ingest-summary`: tabla con lo que cargó cada entidad (batches cargados, salteados, filas, cambios de esquema).
+4. Subflow **dbt-duckdb** y subflow **dbt-postgres**: `PrefectDbtRunner` convierte cada modelo y test de dbt
+   en una task (como Cosmos en Airflow). `dbt-postgres` primero copia Iceberg → Postgres con `iceberg_to_pg.map(...)`.
+5. **Deployments** → `lakehouse-pipeline/lakehouse`: lo sirve el contenedor `runner`. Desde **Run → Custom run**
+   podés cambiar el parámetro `mode` (`append` / `upsert`) o apagar uno de los motores.
 
 **Desde la terminal**
 
 ```bash
-just ingest                        # vuelve a disparar la ingesta (no hay batches nuevos → no carga nada)
-astro dev run dags list-runs lakehouse_ingest
+just ingest                        # vuelve a correr el pipeline (no hay batches nuevos → no carga nada)
+just logs                          # logs del runner
 ```
 
 **Preguntas**
-* Después de `just ingest` sin datos nuevos, ¿qué dice el log de `summarize`? ¿Por qué no se duplicaron filas?
+* Después de `just ingest` sin datos nuevos, ¿qué dice el artifact `ingest-summary`? ¿Por qué no se duplicaron filas?
   (pista: `lakehouse.batch-id` en los snapshots, sección 2.3).
+* En Airflow los DAGs de dbt arrancan por un *asset*; acá son subflows. ¿Qué ventajas tiene cada forma?
 
 ### 2.3 Iceberg: tablas con historia
 
@@ -146,7 +143,7 @@ just dbt build --target duckdb --select gold                         # reconstru
 just test-dbt                                                        # unit test + data tests en los 2 motores
 ```
 
-> DuckDB admite **un solo escritor**: si un DAG de dbt está corriendo, esperá a que termine antes de
+> DuckDB admite **un solo escritor**: si el subflow de dbt está corriendo, esperá a que termine antes de
 > correr dbt desde tu terminal contra DuckDB.
 
 **Preguntas**
@@ -174,28 +171,14 @@ just compare gold.gold_revenue_by_country_tier
 **Pregunta:** DuckDB lee Iceberg directo (plugin `iceberg` de dbt-duckdb) y Postgres necesita una copia.
 ¿Qué ventajas y desventajas tiene cada camino?
 
-### 2.7 Superset: BI
+### 2.7 Streamlit: el dashboard
 
-Entrá a http://localhost:8088 (admin / admin) → **Dashboards**:
-
-* **Shop · Executive**: revenue, órdenes, ticket promedio, clientes; revenue diario; país × loyalty tier; top clientes.
-* **Shop · Operations**: órdenes por estado, revenue por categoría, unidades por día, performance por producto.
-
-Después:
-1. **SQL → SQL Lab**: elegí **Warehouse Postgres**, esquema `gold`, y consultá cualquier tabla.
-   Probá también **Warehouse DuckDB** (solo lectura).
-2. Desde un resultado de SQL Lab: **Create chart** → armá un gráfico propio y agregalo a un dashboard.
-
-`just superset-setup` vuelve a crear/actualizar datasets, gráficos y dashboards (no duplica nada).
-
-### 2.8 Streamlit: dashboard en Python
-
-En Airflow → **Lakehouse dashboard** (o http://localhost:8501).
+http://localhost:8501 (`just dashboard`).
 
 1. En la barra lateral cambiá **Engine** entre DuckDB y Postgres: los números tienen que ser iguales.
 2. Abrí `dashboard/app.py`, cambiá un título y guardá: la página se recarga sola.
 
-### 2.9 Jupyter: todo junto
+### 2.8 Jupyter: todo junto
 
 `just notebook` → `notebooks/explore_lakehouse.ipynb`. Corré las celdas en orden:
 
@@ -210,7 +193,7 @@ En Airflow → **Lakehouse dashboard** (o http://localhost:8501).
 
 ## 3. Laboratorio: los 4 escenarios
 
-En cada escenario: corré el comando, esperá a que los 3 DAGs terminen en verde en Airflow, y
+En cada escenario: corré el comando (espera solo a que el flow termine), mirá el flow run en Prefect y
 completá la tabla mirando los sistemas.
 
 ### 3.1 Updates, deletes y duplicados
@@ -226,7 +209,7 @@ El batch `0002` trae: clientes actualizados y borrados, 5 filas **duplicadas exa
 | `just snapshots customers` | un segundo snapshot, batch `0002` |
 | `just dedup-check` | `raw` = 238 filas, `bronze` = 200 (una por cliente) |
 | `just history customers "customer_id = 7"` | si el cliente cambió, ves las dos versiones |
-| Superset / Streamlit → *Orders by status* | aparecen `paid`, `shipped`, `delivered` |
+| Streamlit → *Order status funnel* | aparecen `paid`, `shipped`, `delivered` |
 
 ### 3.2 Schema evolution
 
@@ -239,13 +222,12 @@ ancho (`order_items.quantity` int → long, por 50 pedidos B2B gigantes).
 
 | Dónde mirar | Qué esperar |
 |---|---|
-| Log de `landing_to_iceberg` (customers / order_items) | `Schema evolved: ['add column loyalty_tier ...']`, `promote column quantity int32 -> int64` |
+| Logs de `landing-to-iceberg-customers` / `-order_items` en Prefect | `Schema evolved: ['add column loyalty_tier ...']`, `promote column quantity int32 -> int64` |
 | `just schema-history customers` | `schema_id=0` sin `loyalty_tier`, `schema_id=1` con ella |
 | `just history customers "customer_id = 7"` | la versión vieja tiene `loyalty_tier: None` |
-| Superset → *Revenue by country and loyalty tier* | ahora hay bronze / silver / gold / platinum |
-| *Daily revenue* | un pico enorme en abril: son los 50 pedidos B2B |
+| Streamlit → *Revenue by loyalty tier* | ahora hay bronze / silver / gold / platinum |
+| Streamlit → *Daily revenue* | un pico enorme en abril: son los 50 pedidos B2B |
 
-Después corré `just superset-setup` para que los datasets de Superset tomen las columnas nuevas.
 
 ### 3.3 Eventos que llegan tarde
 
@@ -259,7 +241,7 @@ tenemos (eventos atrasados).
 | Dónde mirar | Qué esperar |
 |---|---|
 | `just time-travel orders` | `raw.orders` crece 20 filas |
-| Superset / Streamlit → *Orders by status* | **no cambia**: bronze se queda con la versión de `updated_at` más nuevo |
+| Streamlit → *Order status funnel* | **no cambia**: bronze se queda con la versión de `updated_at` más nuevo |
 | `just test-dbt` | pasa `assert_bronze_dedup_keeps_latest` |
 
 **Pregunta:** si bronze ordenara por `_ingested_at` (orden de llegada), ¿qué cambiaría en el funnel?
@@ -270,8 +252,8 @@ tenemos (eventos atrasados).
 just demo-idempotency
 ```
 
-Vuelve a escribir el batch `0001` y dispara la ingesta: **no carga nada**. Mirá el log de `summarize`
-(`skipped=['0001', ...]`) y `just snapshots customers` (no hay snapshot nuevo).
+Vuelve a escribir el batch `0001` y corre el pipeline: **no carga nada**. Mirá el artifact `ingest-summary`
+(`batches_skipped` con `0001`) y `just snapshots customers` (no hay snapshot nuevo).
 
 ### 3.5 (Opcional) Upsert en vez de append
 
@@ -291,10 +273,10 @@ Con `upsert`, Iceberg hace el *merge* en la tabla `raw` y se pierde la historia.
 
 1. **Nuevo modelo gold.** Creá `models/gold/gold_revenue_by_category.sql` (revenue y unidades por
    categoría a partir de `fct_order_items` y `dim_products`). Corré `just dbt build --target postgres --select gold_revenue_by_category`
-   y graficalo en Superset desde SQL Lab.
+   y agregá un gráfico en `dashboard/app.py`.
 2. **Test propio.** Agregá en `models/gold/_gold.yml` un test `not_null` y uno `accepted_values` para tu modelo.
 3. **Romper el esquema a propósito.** Subí a MinIO (consola → `landing/shop/customers/batch=9999/`) un
-   Parquet donde `customer_id` sea texto. Corré `just ingest`. ¿Qué tarea falla y con qué mensaje? ¿Por qué
+   Parquet donde `customer_id` sea texto. Corré `just ingest`. ¿Qué task falla en Prefect y con qué mensaje? ¿Por qué
    Iceberg no deja hacer ese cambio? (Después borrá la carpeta `batch=9999`).
 4. **SQL directo sobre archivos.** En Jupyter, contá cuántos eventos `D` (deletes) llegaron en todos los
    batches de `customers` leyendo los JSONL con DuckDB `httpfs`, sin pasar por Iceberg.
@@ -310,8 +292,8 @@ Con `upsert`, Iceberg hace el *merge* en la tabla `raw` y se pierde la historia.
 
 | Síntoma | Qué hacer |
 |---|---|
-| `just check` marca ✘ en un servicio | `just up` (si sigue, `just logs`) |
-| Airflow no abre en :8080 | `just up` (para y vuelve a arrancar en el puerto correcto) |
-| DAG de dbt DuckDB falla con *lock* | Cerrá conexiones a DuckDB (Jupyter `%sql --close duck`, `just duck` abierto) y re-corré el DAG |
-| Superset sin `loyalty_tier` | `just superset-setup` (refresca los datasets) |
+| `just check` marca ✘ en un servicio | `just up` (si sigue, `just logs <servicio>`) |
+| `just ingest` dice que no encuentra el deployment | el `runner` todavía está arrancando: `just logs` y esperá a ver `serving` |
+| El subflow dbt-duckdb falla con *lock* | Cerrá conexiones a DuckDB (Jupyter `%sql --close duck`, `just duck` abierto) y volvé a correr `just ingest` |
+| Streamlit muestra un error | esperá a que termine el flow y apretá `R` |
 | Quiero empezar de cero | `just nuke && just up && just demo-initial` |

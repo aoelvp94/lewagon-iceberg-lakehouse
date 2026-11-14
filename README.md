@@ -14,6 +14,8 @@ La lógica de negocio es la misma en todas las ramas; lo único que cambia es el
 
 Todo se maneja con `just` (`just` a secas lista las recetas).
 
+> 👩‍🎓 **Estudiantes: empiecen por la [guía práctica](docs/guia-estudiantes.md)**: recorrido por cada sistema (MinIO, Prefect, Iceberg, dbt, Postgres, DuckDB, Streamlit, Jupyter), laboratorio con los 4 escenarios y desafíos.
+
 ---
 
 ## Arquitectura
@@ -61,7 +63,8 @@ erDiagram
 ## Arranque rápido
 
 ```bash
-just up           # Prefect server + runner + MinIO + Postgres + Streamlit
+just up           # Prefect server + runner + MinIO + Postgres + Streamlit + Jupyter
+just check        # ✔ / ✘ por cada sistema y cada capa de datos
 just demo-initial # genera el batch inicial y corre el deployment (espera a que termine)
 ```
 
@@ -71,6 +74,7 @@ just demo-initial # genera el batch inicial y corre el deployment (espera a que 
 | Streamlit | http://localhost:8501 | — |
 | MinIO | http://localhost:9001 | minio / minio123 |
 | Postgres (warehouse) | localhost:5433 | lakehouse / lakehouse |
+| Jupyter | http://localhost:8888 | sin token |
 
 ---
 
@@ -93,7 +97,7 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 
 * **Append + dedup en bronze vs. upsert en raw.** Append conserva la historia (auditoría, _time travel_, reprocesar); upsert simplifica bronze pero pierde eventos intermedios.
 * **Contratos de esquema.** El operador acepta columnas nuevas y promociones seguras (`int→long`, `float→double`). Un cambio incompatible (p. ej. `customer_id` pasa a string) **falla a propósito** (ver `test_incompatible_type_change_fails_loudly`).
-* **Schema evolution aguas abajo.** `bronze` toma las columnas en tiempo de ejecución (`dedup_latest`); `silver` usa `column_or_default` para que `loyalty_tier` funcione antes y después del cambio.
+* **Schema evolution aguas abajo.** Los modelos son SQL plano. `bronze_customers` expone `loyalty_tier` siempre (en `null` hasta que llega la columna, con un `{% if %}` visible en el modelo) y `dim_customers` la completa con `'unknown'`, así `silver` y `gold` funcionan antes y después del cambio.
 * **DuckDB vs Postgres.** Mismos modelos, mismos números (`just compare`), dos formas de leer Iceberg.
 
 ---
@@ -107,16 +111,20 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 
 ## Streamlit
 
-`dashboard/app.py`: KPIs, revenue diario, funnel de estados, revenue por tier y top productos. El selector de la barra lateral cambia entre **DuckDB** y **Postgres**: mismos modelos gold, dos motores. Las consultas devuelven tablas Arrow (sin pandas en nuestro código).
+`dashboard/app.py` (`just dashboard`): KPIs, revenue diario, funnel de estados, revenue por tier y por país, top clientes y top productos. `dashboard/` está montado en el contenedor: si editás `app.py`, la página se recarga sola. El selector de la barra lateral cambia entre **DuckDB** y **Postgres**: mismos modelos gold, dos motores. Las consultas devuelven tablas Arrow (sin pandas en nuestro código).
 
 > DuckDB admite un solo escritor: si Streamlit muestra un error de _lock_ mientras corre dbt, esperá a que termine el flow y apretá `R`.
+
+## Jupyter
+
+`notebooks/explore_lakehouse.ipynb` (`just notebook`): consultas con `jupysql` a Postgres y DuckDB, archivos de MinIO con `s3fs` + `pyarrow`, DuckDB leyendo MinIO con `httpfs` y time travel con `pyiceberg`. `just notebook-check` ejecuta todo el notebook para verificar que sigue andando.
 
 ## Airflow vs Prefect (para la discusión)
 
 | | Airflow (`main`) | Prefect (esta rama) |
 |---|---|---|
 | Unidad | DAG declarado, parseado por el scheduler | Funciones Python decoradas (`@flow`, `@task`) |
-| Fan-out por entidad | lista de operadores (o dynamic task mapping) | `task.map(...)` |
+| Fan-out por entidad | dynamic task mapping (`.partial().expand()`) | `task.map(...)` |
 | Encadenar dbt tras la ingesta | Assets (data-aware scheduling) entre DAGs | subflows dentro del mismo flow |
 | dbt | Cosmos: 1 task por modelo + tests | `PrefectDbtRunner`: 1 task por nodo |
 | Reutilización | operador custom (`LandingToIcebergOperator`) | task que envuelve la misma función |
@@ -126,12 +134,13 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 ```
 ├── flows/                     # Prefect: flow + Dockerfile del runner
 ├── dashboard/                 # Streamlit
+├── notebooks/                 # Jupyter: jupysql, MinIO, pyiceberg
 ├── include/
 │   ├── lakehouse/             # lógica compartida (sin orquestador)
 │   ├── dbt/shop/              # proyecto dbt (bronze/silver/gold, 2 targets)
 │   └── data/                  # warehouse.duckdb (ignorado por git)
 ├── scripts/                   # generador de datos + inspector de Iceberg (uv)
-├── infra/                     # init de Postgres/MinIO
+├── infra/                     # init de Postgres/MinIO, imagen de Jupyter
 ├── tests/                     # pytest (ingesta)
 ├── docker-compose.yml
 └── justfile

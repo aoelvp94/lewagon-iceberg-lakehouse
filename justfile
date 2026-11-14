@@ -15,7 +15,7 @@ setup:
     @mkdir -p include/data
     @echo "✔ nothing else to configure (credentials live in docker-compose.yml)"
 
-# Start Prefect server + runner + MinIO + Postgres + Streamlit
+# Start Prefect server + runner + MinIO + Postgres + Streamlit + Jupyter
 up: setup
     docker compose up -d --build
     @just urls
@@ -39,6 +39,27 @@ urls:
     @echo "Streamlit  http://localhost:8501"
     @echo "MinIO      http://localhost:9001   (minio / minio123)"
     @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
+    @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+
+# Is every system up, and is there data in each layer? One line per check.
+check:
+    #!/usr/bin/env bash
+    ok()  { printf "  \033[32m✔\033[0m %-22s %s\n" "$1" "$2"; }
+    ko()  { printf "  \033[31m✘\033[0m %-22s %s\n" "$1" "$2"; }
+    http() { [ "$(curl -s -o /dev/null -w '%{http_code}' "$2")" = 200 ] && ok "$1" "$2" || ko "$1" "$2 (not answering: just up)"; }
+    echo "Services"
+    http "Prefect"   http://localhost:4200/api/health
+    http "MinIO"     http://localhost:9000/minio/health/live
+    http "Jupyter"   http://localhost:8888/api
+    http "Streamlit" http://localhost:8501/_stcore/health
+    docker compose exec -T warehouse-postgres pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
+    echo "Data"
+    n=$(uv run -q scripts/iceberg_inspect.py tables 2>/dev/null | grep -c '^raw\.')
+    [ "$n" -ge 4 ] && ok "Iceberg raw tables" "$n tables" || ko "Iceberg raw tables" "$n tables (just demo-initial)"
+    n=$(docker compose exec -T warehouse-postgres psql -tAq -U lakehouse -d warehouse -c "select count(*) from information_schema.tables where table_schema = 'gold'" 2>/dev/null)
+    [ "${n:-0}" -ge 5 ] && ok "Postgres gold" "$n tables" || ko "Postgres gold" "${n:-0} tables (wait for the dbt-postgres subflow)"
+    n=$(uv run -q --with duckdb python -c "import duckdb; print(duckdb.connect('include/data/warehouse.duckdb', read_only=True).sql(\"select count(*) from information_schema.tables where table_schema = 'gold'\").fetchall()[0][0])" 2>/dev/null)
+    [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for the dbt-duckdb subflow, or file locked by dbt)"
 
 # ─── data generation + ingestion ────────────────────────────────────────────
 
@@ -115,6 +136,21 @@ compare model="gold.gold_order_status_funnel":
 # Show dedup at work: rows in raw vs bronze
 dedup-check:
     just psql "select 'raw' as layer, count(*) from raw.customers union all select 'bronze', count(*) from bronze.bronze_customers"
+
+# ─── notebooks ──────────────────────────────────────────────────────────────
+
+# Open the exploration notebook (jupysql on Postgres + DuckDB, files in MinIO)
+notebook:
+    open "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb" || echo "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+
+# Run the notebook headless inside the container (checks every snippet still works)
+notebook-check:
+    docker compose exec -T jupyter jupyter nbconvert --to notebook --execute \
+      --output /tmp/explore_lakehouse.out.ipynb notebooks/explore_lakehouse.ipynb
+
+# Streamlit gold dashboard
+dashboard:
+    open "http://localhost:8501" || echo "http://localhost:8501"
 
 # ─── dbt from the host (handy to debug models without the orchestrator) ──────────────
 
