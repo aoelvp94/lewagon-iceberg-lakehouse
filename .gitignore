@@ -1,15 +1,50 @@
+# ── Secrets / local config ─────────────────────────────────────────────────
 .env
-.venv/
+.env.*
+!.env.example
+airflow_settings.local.yaml
+
+# ── Python ─────────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ── Airflow / Astro CLI ────────────────────────────────────────────────────
+logs/
+airflow.db
+standalone_admin_password.txt
+.astro/*.lock
+.astro/test_dags_*
+
+# ── Data written by the stack (Iceberg lives in MinIO, DuckDB file here) ───
 include/data/*
 !include/data/.gitkeep
-include/dbt/shop/target/
-include/dbt/shop/dbt_packages/
-include/dbt/shop/logs/
-logs/
-airflow_settings.local.yaml
-.DS_Store
-include/dbt/shop/.user.yml
+*.duckdb
+*.duckdb.wal
+
+# ── dbt ────────────────────────────────────────────────────────────────────
+**/target/
+**/dbt_packages/
+**/dbt_internal_packages/
+include/dbt/**/logs/
+**/.user.yml
+
+# ── Jupyter ────────────────────────────────────────────────────────────────
 .ipynb_checkpoints/
+.virtual_documents/
+
+# ── Editors / OS ───────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db

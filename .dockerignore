@@ -1,6 +1,16 @@
+# Keep the Astro image small: only dags/, include/, plugins/, tests/ and config are needed.
 .git
 .venv
+.env
+**/__pycache__
+**/*.py[cod]
+.pytest_cache
+.ipynb_checkpoints
 include/data
 include/dbt/shop/target
 include/dbt/shop/logs
+include/dbt/shop/dbt_packages
 docs
+notebooks
+infra
+logs
