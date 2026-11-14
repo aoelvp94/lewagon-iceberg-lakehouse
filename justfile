@@ -78,6 +78,15 @@ check:
     n=$(uv run -q --with duckdb python -c "import duckdb; print(duckdb.connect('include/data/warehouse.duckdb', read_only=True).sql(\"select count(*) from information_schema.tables where table_schema = 'gold'\").fetchall()[0][0])" 2>/dev/null)
     [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for lakehouse_dbt_duckdb, or file locked by dbt)"
 
+# Check out prefect and kestra next to this repo (git worktree), ready to run side by side.
+# Then: cd <dir>/lakehouse-prefect && just up   (same in lakehouse-kestra). See docs/orquestadores.md
+worktrees dir="..":
+    git fetch -q origin prefect kestra
+    test -d {{ dir }}/lakehouse-prefect || git worktree add {{ dir }}/lakehouse-prefect prefect
+    test -d {{ dir }}/lakehouse-kestra || git worktree add {{ dir }}/lakehouse-kestra kestra
+    cd {{ dir }}/lakehouse-prefect && just side-by-side
+    cd {{ dir }}/lakehouse-kestra && just side-by-side
+
 # ─── data generation + ingestion ────────────────────────────────────────────
 
 # Drop a source batch in the landing zone: initial | updates | schema-evolution | late-arriving | all

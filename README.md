@@ -16,6 +16,8 @@ Todo se maneja con `just` (`just` a secas lista las recetas).
 
 > 👩‍🎓 **Estudiantes: empiecen por la [guía práctica](docs/guia-estudiantes.md)**: recorrido por cada sistema (MinIO, Airflow, Iceberg, dbt, Postgres, DuckDB, Superset, Streamlit, Jupyter), laboratorio con los 4 escenarios y desafíos.
 
+> 🔀 **¿Airflow, Prefect o Kestra?** La [guía de orquestadores](docs/orquestadores.md) compara cómo cada uno orquesta la ingesta y dbt, con capturas, y explica cómo correr uno solo o los tres a la vez (`just worktrees`).
+
 ---
 
 ## Arquitectura
