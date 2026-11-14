@@ -12,3 +12,4 @@ logs/
 airflow_settings.local.yaml
 .DS_Store
 include/dbt/shop/.user.yml
+.ipynb_checkpoints/
