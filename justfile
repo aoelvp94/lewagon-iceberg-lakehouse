@@ -20,6 +20,8 @@ setup:
 
 # Start Airflow + MinIO + Postgres + Superset
 up: setup build-images
+    @# start from stopped: on a running project the Astro CLI moves Airflow to a random port
+    -@astro dev stop >/dev/null 2>&1
     astro dev start --wait 5m
     @just urls
 
@@ -27,6 +29,7 @@ up: setup build-images
 build-images:
     docker build -q -t lewagon/superset:local infra/superset
     docker build -q -t lewagon/jupyter:local infra/jupyter
+    docker build -q -t lewagon/streamlit:local dashboard
 
 # Stop containers (keeps data)
 down:
@@ -51,6 +54,7 @@ urls:
     @echo "Superset   http://localhost:8088   (admin / admin)"
     @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
     @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+    @echo "Streamlit  http://localhost:8501   (also inside Airflow: nav → Lakehouse dashboard)"
 
 # ─── data generation + ingestion ────────────────────────────────────────────
 
@@ -91,6 +95,10 @@ demo-upsert: (generate "initial") (generate "updates") (ingest "upsert")
 # Datasets + charts + "Shop · Executive" / "Shop · Operations" dashboards on gold.* (idempotent)
 superset-setup wait="900":
     python3 scripts/superset_setup.py --wait {{ wait }}
+
+# Streamlit gold dashboard, embedded in Airflow by plugins/lakehouse_dashboard.py
+dashboard:
+    open "http://localhost:8080/plugin/lakehouse-dashboard" || echo "http://localhost:8080/plugin/lakehouse-dashboard"
 
 # ─── look inside Iceberg ────────────────────────────────────────────────────
 

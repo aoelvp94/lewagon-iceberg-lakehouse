@@ -61,8 +61,8 @@ erDiagram
 
 ```bash
 just setup        # crea .env
-just up           # Airflow + MinIO + Postgres + Superset
-just demo-initial # genera el batch inicial y dispara la ingesta
+just up           # Airflow + MinIO + Postgres + Superset + Jupyter + Streamlit
+just demo-initial # genera el batch inicial, dispara la ingesta y arma los dashboards de Superset
 ```
 
 `lakehouse_ingest` actualiza el asset `iceberg_raw`, y eso dispara solos `lakehouse_dbt_duckdb` y `lakehouse_dbt_postgres`.
@@ -73,6 +73,8 @@ just demo-initial # genera el batch inicial y dispara la ingesta
 | MinIO | http://localhost:9001 | minio / minio123 |
 | Superset | http://localhost:8088 | admin / admin |
 | Postgres (warehouse) | localhost:5433 | lakehouse / lakehouse |
+| Jupyter | http://localhost:8888 | sin token |
+| Streamlit | http://localhost:8501 (y dentro de Airflow) | — |
 
 ---
 
@@ -110,9 +112,26 @@ Cada demo genera un batch con id fijo y dispara la ingesta. Después de cada uno
 
 ## Superset
 
-Al arrancar ya están creadas las conexiones **Warehouse Postgres** y **Warehouse DuckDB** (solo lectura). Ver [`docs/superset.md`](docs/superset.md) para armar el dashboard en 5 minutos.
+Al arrancar ya están creadas las conexiones **Warehouse Postgres** y **Warehouse DuckDB** (solo lectura). `just demo-initial` (o `just superset-setup`) crea los dashboards **Shop · Executive** y **Shop · Operations** sobre las tablas `gold.*`. Ver [`docs/superset.md`](docs/superset.md).
 
 > DuckDB admite un solo escritor: si Superset da error de _lock_ mientras corre dbt, esperá a que termine el DAG y refrescá.
+
+## Dashboard de Streamlit dentro de Airflow (plugin)
+
+`plugins/lakehouse_dashboard.py` es un plugin de Airflow 3 que agrega una *external view*: aparece
+**Lakehouse dashboard** en la barra lateral de Airflow y muestra embebida (iframe) la app de
+Streamlit `dashboard/app.py`, que lee las tablas gold de DuckDB o de Postgres (se elige en la barra
+lateral). `just dashboard` la abre en http://localhost:8080/plugin/lakehouse-dashboard.
+
+* El plugin no contiene lógica: solo le dice a Airflow dónde vive la app (`href`) y en qué ruta
+  embeberla (`url_route`). Airflow carga los plugins al arrancar: después de tocarlo, `just up`.
+* `dashboard/` está montado en el contenedor: si editás `app.py`, la página se recarga sola.
+
+## Jupyter
+
+`notebooks/explore_lakehouse.ipynb` (`just notebook`): consultas con `jupysql` a Postgres y DuckDB,
+archivos de MinIO con `s3fs` + `pyarrow`, DuckDB leyendo MinIO con `httpfs` y time travel con
+`pyiceberg`. `just notebook-check` ejecuta todo el notebook para verificar que sigue andando.
 
 ## Estructura
 
@@ -123,8 +142,11 @@ Al arrancar ya están creadas las conexiones **Warehouse Postgres** y **Warehous
 │   ├── operators/transfers.py # LandingToIcebergOperator, IcebergToPostgresOperator
 │   ├── dbt/shop/              # proyecto dbt (bronze/silver/gold, 2 targets)
 │   └── data/                  # warehouse.duckdb (ignorado por git)
-├── scripts/                   # generador de datos + inspector de Iceberg (uv)
-├── infra/                     # init de Postgres/MinIO, imagen de Superset
+├── plugins/                   # plugin de Airflow: dashboard de Streamlit embebido
+├── dashboard/                 # app de Streamlit sobre gold (DuckDB / Postgres)
+├── notebooks/                 # Jupyter: jupysql, MinIO, pyiceberg
+├── scripts/                   # generador de datos, inspector de Iceberg, setup de Superset
+├── infra/                     # init de Postgres/MinIO, imágenes de Superset y Jupyter
 ├── tests/                     # pytest (ingesta) + integridad de DAGs
 ├── docker-compose.override.yml
 └── justfile

@@ -72,6 +72,21 @@ services:
       - ./notebooks:/home/jovyan/notebooks
       - ./include/data:/data:ro
 
+  streamlit:
+    networks: [airflow]
+    # Built by `just up` (see dashboard/Dockerfile); shown inside Airflow by plugins/lakehouse_dashboard.py
+    image: lewagon/streamlit:local
+    pull_policy: never
+    environment:
+      DUCKDB_PATH: /data/warehouse.duckdb
+      WAREHOUSE_PG_HOST: warehouse-postgres
+      WAREHOUSE_PG_PORT: "5432"
+    ports: ["8501:8501"]
+    depends_on: [warehouse-postgres]
+    volumes:
+      - ./dashboard:/app:ro  # edit dashboard/app.py and the page reloads
+      - ./include/data:/data:ro
+
 volumes:
   minio-data:
   warehouse-pg:
