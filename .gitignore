@@ -51,3 +51,7 @@ Thumbs.db
 
 # ── Side-by-side checkouts of the other branches (git worktree) ────────────
 .worktrees/
+
+# Metabase writes drivers and its sample database here
+infra/metabase/plugins/*
+!infra/metabase/plugins/.gitkeep

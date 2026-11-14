@@ -1,6 +1,0 @@
-api-server:
-    port: "8080"
-project:
-    name: lewagon-iceberg-lakehouse
-webserver:
-    port: 8080
