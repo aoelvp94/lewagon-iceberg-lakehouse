@@ -48,3 +48,6 @@ include/dbt/**/logs/
 *~
 .DS_Store
 Thumbs.db
+
+# ── Side-by-side checkouts of the other branches (git worktree) ────────────
+.worktrees/

@@ -81,8 +81,7 @@ Entrá a http://localhost:9001 (minio / minio123).
   en la base `iceberg_catalog` de Postgres):
 
 ```bash
-docker exec -i $(docker ps -qf "name=warehouse-postgres") \
-  psql -U lakehouse -d iceberg_catalog -c "select table_name, metadata_location from iceberg_tables"
+just psql "select table_name, metadata_location from iceberg_tables" iceberg_catalog
 ```
 
 ### 2.2 Airflow: la orquestación

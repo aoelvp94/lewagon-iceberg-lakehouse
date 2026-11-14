@@ -68,7 +68,7 @@ check:
     http "Superset"  http://localhost:8088/health
     http "Jupyter"   http://localhost:8888/api
     http "Streamlit" http://localhost:8501/_stcore/health
-    pg=$(docker ps -qf "name=warehouse-postgres")
+    pg=$(docker ps -qf "name=^lewagon-iceberg-lakehouse_.*-warehouse-postgres")
     docker exec "$pg" pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
     echo "Data"
     n=$(uv run -q scripts/iceberg_inspect.py tables 2>/dev/null | grep -c '^raw\.')
@@ -149,9 +149,9 @@ history table="customers" where="customer_id = 7":
 
 # ─── query the medallion layers ─────────────────────────────────────────────
 
-# SQL against the Postgres warehouse
-psql sql="select * from gold.gold_order_status_funnel":
-    docker exec -i $(docker ps -qf "name=warehouse-postgres") psql -U lakehouse -d warehouse -c "{{ sql }}"
+# SQL against the Postgres warehouse (db=iceberg_catalog to see the Iceberg catalog tables)
+psql sql="select * from gold.gold_order_status_funnel" db="warehouse":
+    docker exec -i $(docker ps -qf "name=^lewagon-iceberg-lakehouse_.*-warehouse-postgres") psql -U lakehouse -d {{ db }} -c "{{ sql }}"
 
 # SQL against the DuckDB warehouse file (read-only)
 duck sql="select * from gold.gold_order_status_funnel":
@@ -174,7 +174,7 @@ notebook:
 
 # Run the notebook headless inside the container (checks every snippet still works)
 notebook-check:
-    docker exec $(docker ps -qf "name=jupyter") jupyter nbconvert --to notebook --execute \
+    docker exec $(docker ps -qf "name=^lewagon-iceberg-lakehouse_.*-jupyter") jupyter nbconvert --to notebook --execute \
       --output /tmp/explore_lakehouse.out.ipynb notebooks/explore_lakehouse.ipynb
 
 # ─── dbt from the host (handy to debug models without Airflow) ──────────────
