@@ -1,7 +1,6 @@
 """Streamlit dashboard over the gold layer — pick the engine in the sidebar.
 
-Runs as the `streamlit` service (http://localhost:8501) and shows up inside Airflow
-under "Lakehouse dashboard" thanks to plugins/lakehouse_dashboard.py.
+Runs as the `streamlit` service (http://localhost:8501).
 
 Same gold tables, two engines: DuckDB (file, read-only) and Postgres.
 No pandas in our code: queries return Arrow tables that Streamlit renders directly.
@@ -21,7 +20,7 @@ DUCKDB_PATH = os.getenv("DUCKDB_PATH", "/data/warehouse.duckdb")
 st.set_page_config(page_title="Shop · Lakehouse", layout="wide")
 st.title("Shop · Lakehouse (gold)")
 engine = st.sidebar.radio("Engine", ["DuckDB", "Postgres"])
-st.sidebar.caption("Run `just demo-*`, wait for the dbt DAGs, then press R to refresh.")
+st.sidebar.caption("Run `just demo-*`, wait for the flow, then press R to refresh.")
 
 
 def decimals_to_float(table: pa.Table) -> pa.Table:

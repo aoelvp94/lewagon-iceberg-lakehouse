@@ -1,60 +1,72 @@
-# Le Wagon · Iceberg lakehouse demo · Airflow (Astro CLI) + Cosmos + Superset
-# `just` lists every recipe. Host tools needed: astro, docker, uv, just.
+# Le Wagon · Iceberg lakehouse demo · Prefect 3 + prefect-dbt + Streamlit
+# `just` lists every recipe. Host tools needed: docker, uv, just.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
+# .env holds the host ports (written by `just side-by-side`); docker compose reads it too
+set dotenv-load
+
+minio_port := env("MINIO_PORT", "9000")
+minio_console_port := env("MINIO_CONSOLE_PORT", "9001")
+pg_port := env("PG_PORT", "5433")
+prefect_port := env("PREFECT_PORT", "4200")
+streamlit_port := env("STREAMLIT_PORT", "8501")
+jupyter_port := env("JUPYTER_PORT", "8888")
 
 # Host-side view of the stack (scripts run on your laptop, not in containers)
-export MINIO_ENDPOINT := "http://localhost:9000"
+export MINIO_ENDPOINT := "http://localhost:" + minio_port
 export LANDING_URI := "s3://landing/shop"
+export PYICEBERG_CATALOG__LAKEHOUSE__TYPE := "sql"
+export PYICEBERG_CATALOG__LAKEHOUSE__URI := "postgresql+psycopg2://lakehouse:lakehouse@localhost:" + pg_port + "/iceberg_catalog"
+export PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE := "s3://warehouse"
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT := MINIO_ENDPOINT
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID := "minio"
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY := "minio123"
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION := "us-east-1"
 
 default:
     @just --list --unsorted
 
 # ─── lifecycle ──────────────────────────────────────────────────────────────
 
-# First time only: create .env from the example
 setup:
-    @test -f .env || cp .env.example .env
     @mkdir -p include/data
-    @echo "✔ .env ready. Next: just up"
+    @echo "✔ nothing else to configure (credentials live in docker-compose.yml)"
 
-# Start Airflow + MinIO + Postgres + Superset
-up: setup build-images
-    @# start from stopped: on a running project the Astro CLI moves Airflow to a random port
-    -@astro dev stop >/dev/null 2>&1
-    astro dev start --wait 5m
+# Start Prefect server + runner + MinIO + Postgres + Streamlit + Jupyter
+up: setup
+    docker compose up -d --build
     @just urls
 
-# Build the images used by docker-compose.override.yml (the Astro CLI does not build them)
-build-images:
-    docker build -q -t lewagon/superset:local infra/superset
-    docker build -q -t lewagon/jupyter:local infra/jupyter
-    docker build -q -t lewagon/streamlit:local dashboard
-
-# Stop containers (keeps data)
 down:
-    astro dev stop
+    docker compose down
 
-# Stop and delete ALL data (Iceberg files, catalog, DuckDB, Superset)
+# Stop and delete ALL data
 nuke:
-    astro dev kill
+    docker compose down -v
     rm -f include/data/*.duckdb include/data/*.wal
 
-# Rebuild the image after changing requirements / Dockerfile
 restart:
-    astro dev restart
+    docker compose up -d --build --force-recreate runner streamlit
 
-logs:
-    astro dev logs -f
+logs service="runner":
+    docker compose logs -f {{ service }}
 
-# Where everything lives
 urls:
-    @echo "Airflow    http://localhost:8080"
-    @echo "MinIO      http://localhost:9001   (minio / minio123)"
-    @echo "Superset   http://localhost:8088   (admin / admin)"
-    @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
-    @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
-    @echo "Streamlit  http://localhost:8501   (also inside Airflow: nav → Lakehouse dashboard)"
+    @echo "Prefect    http://localhost:{{ prefect_port }}"
+    @echo "Streamlit  http://localhost:{{ streamlit_port }}"
+    @echo "MinIO      http://localhost:{{ minio_console_port }}   (minio / minio123)"
+    @echo "Postgres   localhost:{{ pg_port }}          (lakehouse / lakehouse, db=warehouse)"
+    @echo "Jupyter    http://localhost:{{ jupyter_port }}/lab/tree/notebooks/explore_lakehouse.ipynb"
+
+# Run next to the Airflow stack (main): move every host port to 1xxxx. Then: just up
+side-by-side:
+    printf 'MINIO_PORT=19000\nMINIO_CONSOLE_PORT=19001\nPG_PORT=15433\nPREFECT_PORT=14200\nSTREAMLIT_PORT=18501\nJUPYTER_PORT=18888\n' > .env
+    @echo "✔ .env written: ports 1xxxx. Run: just down && just up"
+
+# Back to the standard ports (when this is the only stack running). Then: just up
+default-ports:
+    rm -f .env
+    @echo "✔ standard ports. Run: just down && just up"
 
 # Is every system up, and is there data in each layer? One line per check.
 check:
@@ -63,29 +75,18 @@ check:
     ko()  { printf "  \033[31m✘\033[0m %-22s %s\n" "$1" "$2"; }
     http() { [ "$(curl -s -o /dev/null -w '%{http_code}' "$2")" = 200 ] && ok "$1" "$2" || ko "$1" "$2 (not answering: just up)"; }
     echo "Services"
-    http "Airflow"   http://localhost:8080/api/v2/monitor/health
-    http "MinIO"     http://localhost:9000/minio/health/live
-    http "Superset"  http://localhost:8088/health
-    http "Jupyter"   http://localhost:8888/api
-    http "Streamlit" http://localhost:8501/_stcore/health
-    pg=$(docker ps -qf "name=^lewagon-iceberg-lakehouse_.*-warehouse-postgres")
-    docker exec "$pg" pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
+    http "Prefect"   http://localhost:{{ prefect_port }}/api/health
+    http "MinIO"     http://localhost:{{ minio_port }}/minio/health/live
+    http "Jupyter"   http://localhost:{{ jupyter_port }}/api
+    http "Streamlit" http://localhost:{{ streamlit_port }}/_stcore/health
+    docker compose exec -T warehouse-postgres pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:{{ pg_port }}" || ko "Postgres" "localhost:{{ pg_port }}"
     echo "Data"
     n=$(uv run -q scripts/iceberg_inspect.py tables 2>/dev/null | grep -c '^raw\.')
     [ "$n" -ge 4 ] && ok "Iceberg raw tables" "$n tables" || ko "Iceberg raw tables" "$n tables (just demo-initial)"
-    n=$(docker exec "$pg" psql -tAq -U lakehouse -d warehouse -c "select count(*) from information_schema.tables where table_schema = 'gold'" 2>/dev/null)
-    [ "${n:-0}" -ge 5 ] && ok "Postgres gold" "$n tables" || ko "Postgres gold" "${n:-0} tables (wait for lakehouse_dbt_postgres)"
+    n=$(docker compose exec -T warehouse-postgres psql -tAq -U lakehouse -d warehouse -c "select count(*) from information_schema.tables where table_schema = 'gold'" 2>/dev/null)
+    [ "${n:-0}" -ge 5 ] && ok "Postgres gold" "$n tables" || ko "Postgres gold" "${n:-0} tables (wait for the dbt-postgres subflow)"
     n=$(uv run -q --with duckdb python -c "import duckdb; print(duckdb.connect('include/data/warehouse.duckdb', read_only=True).sql(\"select count(*) from information_schema.tables where table_schema = 'gold'\").fetchall()[0][0])" 2>/dev/null)
-    [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for lakehouse_dbt_duckdb, or file locked by dbt)"
-
-# Check out prefect and kestra next to this repo (git worktree), ready to run side by side.
-# Then: cd <dir>/lakehouse-prefect && just up   (same in lakehouse-kestra). See docs/orquestadores.md
-worktrees dir="..":
-    git fetch -q origin prefect kestra
-    test -d {{ dir }}/lakehouse-prefect || git worktree add {{ dir }}/lakehouse-prefect prefect
-    test -d {{ dir }}/lakehouse-kestra || git worktree add {{ dir }}/lakehouse-kestra kestra
-    cd {{ dir }}/lakehouse-prefect && just side-by-side
-    cd {{ dir }}/lakehouse-kestra && just side-by-side
+    [ "${n:-0}" -ge 5 ] && ok "DuckDB gold" "$n tables" || ko "DuckDB gold" "${n:-0} tables (wait for the dbt-duckdb subflow, or file locked by dbt)"
 
 # ─── data generation + ingestion ────────────────────────────────────────────
 
@@ -93,18 +94,16 @@ worktrees dir="..":
 generate scenario="initial":
     uv run scripts/generate_data.py {{ scenario }}
 
-# Run the transfer operators (landing -> Iceberg). mode: append | upsert
+# Run the deployment: ingest (transfer tasks) -> dbt DuckDB -> copy + dbt Postgres. mode: append | upsert
 ingest mode="append":
-    astro dev run dags unpause lakehouse_ingest >/dev/null
-    astro dev run dags unpause lakehouse_dbt_duckdb >/dev/null
-    astro dev run dags unpause lakehouse_dbt_postgres >/dev/null
-    astro dev run dags trigger lakehouse_ingest --conf '{"mode": "{{ mode }}"}'
-    @echo "→ follow it at http://localhost:8080 (dbt DAGs start automatically after it)"
+    docker compose exec runner prefect deployment run 'lakehouse-pipeline/lakehouse' \
+      --param mode={{ mode }} --watch
+    @echo "→ Streamlit: http://localhost:{{ streamlit_port }}"
 
 # ─── classroom demos ────────────────────────────────────────────────────────
 
-# 1) first load: 200 customers, 40 products, 1000 orders (+ Superset dashboards once dbt is done)
-demo-initial: (generate "initial") ingest superset-setup
+# 1) first load: 200 customers, 40 products, 1000 orders
+demo-initial: (generate "initial") ingest
 
 # 2) updates + deletes + duplicates: raw grows, bronze stays 1 row per key
 demo-updates: (generate "updates") ingest
@@ -120,16 +119,6 @@ demo-idempotency: (generate "initial") ingest
 
 # Merge in place with Iceberg upsert instead of append. Run on a fresh stack: just nuke && just up
 demo-upsert: (generate "initial") (generate "updates") (ingest "upsert")
-
-# ─── dashboards ─────────────────────────────────────────────────────────────
-
-# Datasets + charts + "Shop · Executive" / "Shop · Operations" dashboards on gold.* (idempotent)
-superset-setup wait="900":
-    python3 scripts/superset_setup.py --wait {{ wait }}
-
-# Streamlit gold dashboard, embedded in Airflow by plugins/lakehouse_dashboard.py
-dashboard:
-    open "http://localhost:8080/plugin/lakehouse-dashboard" || echo "http://localhost:8080/plugin/lakehouse-dashboard"
 
 # ─── look inside Iceberg ────────────────────────────────────────────────────
 
@@ -160,7 +149,7 @@ history table="customers" where="customer_id = 7":
 
 # SQL against the Postgres warehouse (db=iceberg_catalog to see the Iceberg catalog tables)
 psql sql="select * from gold.gold_order_status_funnel" db="warehouse":
-    docker exec -i $(docker ps -qf "name=^lewagon-iceberg-lakehouse_.*-warehouse-postgres") psql -U lakehouse -d {{ db }} -c "{{ sql }}"
+    docker compose exec -T warehouse-postgres psql -U lakehouse -d {{ db }} -c "{{ sql }}"
 
 # SQL against the DuckDB warehouse file (read-only)
 duck sql="select * from gold.gold_order_status_funnel":
@@ -179,26 +168,23 @@ dedup-check:
 
 # Open the exploration notebook (jupysql on Postgres + DuckDB, files in MinIO)
 notebook:
-    open "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb" || echo "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+    open "http://localhost:{{ jupyter_port }}/lab/tree/notebooks/explore_lakehouse.ipynb" || echo "http://localhost:{{ jupyter_port }}/lab/tree/notebooks/explore_lakehouse.ipynb"
 
 # Run the notebook headless inside the container (checks every snippet still works)
 notebook-check:
-    docker exec $(docker ps -qf "name=^lewagon-iceberg-lakehouse_.*-jupyter") jupyter nbconvert --to notebook --execute \
+    docker compose exec -T jupyter jupyter nbconvert --to notebook --execute \
       --output /tmp/explore_lakehouse.out.ipynb notebooks/explore_lakehouse.ipynb
 
-# ─── dbt from the host (handy to debug models without Airflow) ──────────────
+# Streamlit gold dashboard
+dashboard:
+    open "http://localhost:{{ streamlit_port }}" || echo "http://localhost:{{ streamlit_port }}"
+
+# ─── dbt from the host (handy to debug models without the orchestrator) ──────────────
 
 # e.g. just dbt build --target postgres --select silver
 dbt *args:
     cd include/dbt/shop && \
-    DUCKDB_PATH=../../data/warehouse.duckdb WAREHOUSE_PG_HOST=localhost WAREHOUSE_PG_PORT=5433 \
-    PYICEBERG_CATALOG__LAKEHOUSE__TYPE=sql \
-    PYICEBERG_CATALOG__LAKEHOUSE__URI=postgresql+psycopg2://lakehouse:lakehouse@localhost:5433/iceberg_catalog \
-    PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE=s3://warehouse \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT=http://localhost:9000 \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID=minio \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY=minio123 \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION=us-east-1 \
+    DUCKDB_PATH=../../data/warehouse.duckdb WAREHOUSE_PG_HOST=localhost WAREHOUSE_PG_PORT={{ pg_port }} \
     uv run --with "dbt-core>=1.11,<2" --with "dbt-duckdb>=1.10" --with "dbt-postgres>=1.10" \
       --with "pyiceberg[sql-postgres,pyarrow,s3fs]>=0.11.1" dbt {{ args }} --profiles-dir .
 
@@ -208,10 +194,6 @@ dbt *args:
 test:
     uv run --with "pyiceberg[sql-sqlite,pyarrow]>=0.11.1" --with fsspec --with pytest \
       pytest tests/lakehouse -q
-
-# DAG integrity tests inside the Astro image
-test-dags:
-    astro dev pytest tests/dags
 
 # dbt data tests + unit tests on both engines
 test-dbt:
@@ -223,7 +205,7 @@ test-dbt:
 
 demo-all:
     just demo-initial
-    @read -p "Initial load triggered. Check Airflow, then press Enter for updates… " _
+    @read -p "Initial load done. Check Prefect + Streamlit, then press Enter for updates… " _
     just demo-updates
     @read -p "Press Enter for schema evolution… " _
     just demo-schema-evolution
