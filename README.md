@@ -76,6 +76,8 @@ just demo-initial # genera el batch inicial y corre el deployment (espera a que 
 | Postgres (warehouse) | localhost:5433 | lakehouse / lakehouse |
 | Jupyter | http://localhost:8888 | sin token |
 
+> **¿Airflow (`main`) corriendo al mismo tiempo?** `just side-by-side` mueve todos los puertos de este stack a 1xxxx (Prefect :14200, Streamlit :18501, MinIO :19001, Postgres :15433, Jupyter :18888) y `just default-ports` los vuelve a los estándar. Ver la [guía de orquestadores](https://github.com/aoelvp94/lewagon-iceberg-lakehouse/blob/main/docs/orquestadores.md).
+
 ---
 
 ## Guion de clase

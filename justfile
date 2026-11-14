@@ -2,9 +2,26 @@
 # `just` lists every recipe. Host tools needed: docker, uv, just.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
+# .env holds the host ports (written by `just side-by-side`); docker compose reads it too
+set dotenv-load
 
-export MINIO_ENDPOINT := "http://localhost:9000"
+minio_port := env("MINIO_PORT", "9000")
+minio_console_port := env("MINIO_CONSOLE_PORT", "9001")
+pg_port := env("PG_PORT", "5433")
+prefect_port := env("PREFECT_PORT", "4200")
+streamlit_port := env("STREAMLIT_PORT", "8501")
+jupyter_port := env("JUPYTER_PORT", "8888")
+
+# Host-side view of the stack (scripts run on your laptop, not in containers)
+export MINIO_ENDPOINT := "http://localhost:" + minio_port
 export LANDING_URI := "s3://landing/shop"
+export PYICEBERG_CATALOG__LAKEHOUSE__TYPE := "sql"
+export PYICEBERG_CATALOG__LAKEHOUSE__URI := "postgresql+psycopg2://lakehouse:lakehouse@localhost:" + pg_port + "/iceberg_catalog"
+export PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE := "s3://warehouse"
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT := MINIO_ENDPOINT
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID := "minio"
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY := "minio123"
+export PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION := "us-east-1"
 
 default:
     @just --list --unsorted
@@ -35,11 +52,21 @@ logs service="runner":
     docker compose logs -f {{ service }}
 
 urls:
-    @echo "Prefect    http://localhost:4200"
-    @echo "Streamlit  http://localhost:8501"
-    @echo "MinIO      http://localhost:9001   (minio / minio123)"
-    @echo "Postgres   localhost:5433          (lakehouse / lakehouse, db=warehouse)"
-    @echo "Jupyter    http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+    @echo "Prefect    http://localhost:{{ prefect_port }}"
+    @echo "Streamlit  http://localhost:{{ streamlit_port }}"
+    @echo "MinIO      http://localhost:{{ minio_console_port }}   (minio / minio123)"
+    @echo "Postgres   localhost:{{ pg_port }}          (lakehouse / lakehouse, db=warehouse)"
+    @echo "Jupyter    http://localhost:{{ jupyter_port }}/lab/tree/notebooks/explore_lakehouse.ipynb"
+
+# Run next to the Airflow stack (main): move every host port to 1xxxx. Then: just up
+side-by-side:
+    printf 'MINIO_PORT=19000\nMINIO_CONSOLE_PORT=19001\nPG_PORT=15433\nPREFECT_PORT=14200\nSTREAMLIT_PORT=18501\nJUPYTER_PORT=18888\n' > .env
+    @echo "✔ .env written: ports 1xxxx. Run: just down && just up"
+
+# Back to the standard ports (when this is the only stack running). Then: just up
+default-ports:
+    rm -f .env
+    @echo "✔ standard ports. Run: just down && just up"
 
 # Is every system up, and is there data in each layer? One line per check.
 check:
@@ -48,11 +75,11 @@ check:
     ko()  { printf "  \033[31m✘\033[0m %-22s %s\n" "$1" "$2"; }
     http() { [ "$(curl -s -o /dev/null -w '%{http_code}' "$2")" = 200 ] && ok "$1" "$2" || ko "$1" "$2 (not answering: just up)"; }
     echo "Services"
-    http "Prefect"   http://localhost:4200/api/health
-    http "MinIO"     http://localhost:9000/minio/health/live
-    http "Jupyter"   http://localhost:8888/api
-    http "Streamlit" http://localhost:8501/_stcore/health
-    docker compose exec -T warehouse-postgres pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:5433" || ko "Postgres" "localhost:5433"
+    http "Prefect"   http://localhost:{{ prefect_port }}/api/health
+    http "MinIO"     http://localhost:{{ minio_port }}/minio/health/live
+    http "Jupyter"   http://localhost:{{ jupyter_port }}/api
+    http "Streamlit" http://localhost:{{ streamlit_port }}/_stcore/health
+    docker compose exec -T warehouse-postgres pg_isready -q -U lakehouse -d warehouse 2>/dev/null && ok "Postgres" "localhost:{{ pg_port }}" || ko "Postgres" "localhost:{{ pg_port }}"
     echo "Data"
     n=$(uv run -q scripts/iceberg_inspect.py tables 2>/dev/null | grep -c '^raw\.')
     [ "$n" -ge 4 ] && ok "Iceberg raw tables" "$n tables" || ko "Iceberg raw tables" "$n tables (just demo-initial)"
@@ -71,7 +98,7 @@ generate scenario="initial":
 ingest mode="append":
     docker compose exec runner prefect deployment run 'lakehouse-pipeline/lakehouse' \
       --param mode={{ mode }} --watch
-    @echo "→ Streamlit: http://localhost:8501"
+    @echo "→ Streamlit: http://localhost:{{ streamlit_port }}"
 
 # ─── classroom demos ────────────────────────────────────────────────────────
 
@@ -120,9 +147,9 @@ history table="customers" where="customer_id = 7":
 
 # ─── query the medallion layers ─────────────────────────────────────────────
 
-# SQL against the Postgres warehouse
-psql sql="select * from gold.gold_order_status_funnel":
-    docker exec -i $(docker ps -qf "name=warehouse-postgres") psql -U lakehouse -d warehouse -c "{{ sql }}"
+# SQL against the Postgres warehouse (db=iceberg_catalog to see the Iceberg catalog tables)
+psql sql="select * from gold.gold_order_status_funnel" db="warehouse":
+    docker compose exec -T warehouse-postgres psql -U lakehouse -d {{ db }} -c "{{ sql }}"
 
 # SQL against the DuckDB warehouse file (read-only)
 duck sql="select * from gold.gold_order_status_funnel":
@@ -141,7 +168,7 @@ dedup-check:
 
 # Open the exploration notebook (jupysql on Postgres + DuckDB, files in MinIO)
 notebook:
-    open "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb" || echo "http://localhost:8888/lab/tree/notebooks/explore_lakehouse.ipynb"
+    open "http://localhost:{{ jupyter_port }}/lab/tree/notebooks/explore_lakehouse.ipynb" || echo "http://localhost:{{ jupyter_port }}/lab/tree/notebooks/explore_lakehouse.ipynb"
 
 # Run the notebook headless inside the container (checks every snippet still works)
 notebook-check:
@@ -150,21 +177,14 @@ notebook-check:
 
 # Streamlit gold dashboard
 dashboard:
-    open "http://localhost:8501" || echo "http://localhost:8501"
+    open "http://localhost:{{ streamlit_port }}" || echo "http://localhost:{{ streamlit_port }}"
 
 # ─── dbt from the host (handy to debug models without the orchestrator) ──────────────
 
 # e.g. just dbt build --target postgres --select silver
 dbt *args:
     cd include/dbt/shop && \
-    DUCKDB_PATH=../../data/warehouse.duckdb WAREHOUSE_PG_HOST=localhost WAREHOUSE_PG_PORT=5433 \
-    PYICEBERG_CATALOG__LAKEHOUSE__TYPE=sql \
-    PYICEBERG_CATALOG__LAKEHOUSE__URI=postgresql+psycopg2://lakehouse:lakehouse@localhost:5433/iceberg_catalog \
-    PYICEBERG_CATALOG__LAKEHOUSE__WAREHOUSE=s3://warehouse \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__ENDPOINT=http://localhost:9000 \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__ACCESS_KEY_ID=minio \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__SECRET_ACCESS_KEY=minio123 \
-    PYICEBERG_CATALOG__LAKEHOUSE__S3__REGION=us-east-1 \
+    DUCKDB_PATH=../../data/warehouse.duckdb WAREHOUSE_PG_HOST=localhost WAREHOUSE_PG_PORT={{ pg_port }} \
     uv run --with "dbt-core>=1.11,<2" --with "dbt-duckdb>=1.10" --with "dbt-postgres>=1.10" \
       --with "pyiceberg[sql-postgres,pyarrow,s3fs]>=0.11.1" dbt {{ args }} --profiles-dir .
 

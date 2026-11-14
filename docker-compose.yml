@@ -1,4 +1,5 @@
 # Prefect flavour: Prefect server + a runner serving the flow + Streamlit + Jupyter.
+# Host ports come from .env (see `just side-by-side`); defaults are the standard ones.
 name: lakehouse-prefect
 
 x-lakehouse-env: &lakehouse-env
@@ -25,7 +26,7 @@ services:
     image: minio/minio:latest
     command: server /data --console-address ":9001"
     environment: {MINIO_ROOT_USER: minio, MINIO_ROOT_PASSWORD: minio123}
-    ports: ["9000:9000", "9001:9001"]
+    ports: ["${MINIO_PORT:-9000}:9000", "${MINIO_CONSOLE_PORT:-9001}:9001"]
     volumes: [minio-data:/data]
 
   minio-init:
@@ -38,7 +39,7 @@ services:
   warehouse-postgres:
     image: postgres:18
     environment: {POSTGRES_USER: lakehouse, POSTGRES_PASSWORD: lakehouse, POSTGRES_DB: warehouse}
-    ports: ["5433:5432"]
+    ports: ["${PG_PORT:-5433}:5432"]
     volumes:
       - warehouse-pg:/var/lib/postgresql
       - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -51,8 +52,8 @@ services:
     image: prefecthq/prefect:3-latest
     command: prefect server start --host 0.0.0.0
     environment:
-      PREFECT_UI_API_URL: http://localhost:4200/api
-    ports: ["4200:4200"]
+      PREFECT_UI_API_URL: http://localhost:${PREFECT_PORT:-4200}/api
+    ports: ["${PREFECT_PORT:-4200}:4200"]
     volumes: [prefect-data:/root/.prefect]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4200/api/health')"]
@@ -75,7 +76,7 @@ services:
     environment:
       <<: *lakehouse-env
       DUCKDB_PATH: /data/warehouse.duckdb
-    ports: ["8501:8501"]
+    ports: ["${STREAMLIT_PORT:-8501}:8501"]
     volumes:
       - ./dashboard:/app:ro      # edit dashboard/app.py and the page reloads
       - ./include/data:/data:ro
@@ -89,7 +90,7 @@ services:
       <<: *lakehouse-env
       AWS_ACCESS_KEY_ID: minio
       AWS_SECRET_ACCESS_KEY: minio123
-    ports: ["8888:8888"]
+    ports: ["${JUPYTER_PORT:-8888}:8888"]
     depends_on: [warehouse-postgres, minio]
     volumes:
       - ./notebooks:/home/jovyan/notebooks
