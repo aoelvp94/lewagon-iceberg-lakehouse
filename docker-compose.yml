@@ -72,6 +72,7 @@ services:
     ports: ["${METABASE_PORT:-3000}:3000"]
     environment:
       MB_PLUGINS_DIR: /plugins
+      MB_DB_FILE: /metabase-data/metabase.db   # app database on the volume: users and dashboards survive restarts
       JAVA_OPTS: -Xmx1g   # keep the JVM laptop-sized
     volumes:
       - metabase-data:/metabase-data
