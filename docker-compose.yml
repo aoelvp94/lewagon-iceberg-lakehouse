@@ -1,4 +1,4 @@
-# Prefect flavour: Prefect server + a runner serving the flow + Streamlit.
+# Prefect flavour: Prefect server + a runner serving the flow + Streamlit + Jupyter.
 name: lakehouse-prefect
 
 x-lakehouse-env: &lakehouse-env
@@ -76,8 +76,24 @@ services:
       <<: *lakehouse-env
       DUCKDB_PATH: /data/warehouse.duckdb
     ports: ["8501:8501"]
-    volumes: [./include/data:/data:ro]
+    volumes:
+      - ./dashboard:/app:ro      # edit dashboard/app.py and the page reloads
+      - ./include/data:/data:ro
     depends_on: [warehouse-postgres]
+
+  jupyter:
+    build: ./infra/jupyter
+    # Local classroom demo only: no token / password
+    command: start-notebook.py --IdentityProvider.token='' --ServerApp.password=''
+    environment:
+      <<: *lakehouse-env
+      AWS_ACCESS_KEY_ID: minio
+      AWS_SECRET_ACCESS_KEY: minio123
+    ports: ["8888:8888"]
+    depends_on: [warehouse-postgres, minio]
+    volumes:
+      - ./notebooks:/home/jovyan/notebooks
+      - ./include/data:/data:ro
 
 volumes:
   minio-data:

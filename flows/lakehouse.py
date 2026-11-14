@@ -19,7 +19,7 @@ from prefect import flow, get_run_logger, task, unmapped
 from prefect.artifacts import create_table_artifact
 from prefect_dbt import PrefectDbtRunner, PrefectDbtSettings
 
-from include.lakehouse.catalog import get_catalog
+from include.lakehouse.catalog import get_catalog, prepare_catalog
 from include.lakehouse.entities import ENTITIES
 from include.lakehouse.ingest import land_to_iceberg
 from include.lakehouse.serve import iceberg_to_postgres
@@ -39,6 +39,12 @@ def landing_fs():
 
 
 # ---------------------------------------------------------------- transfer tasks
+@task
+def prepare_iceberg_catalog() -> None:
+    """Catalog tables + `raw` namespace, created once before the concurrent loads."""
+    prepare_catalog()
+
+
 @task(retries=2, retry_delay_seconds=5, task_run_name="landing-to-iceberg-{entity}")
 def landing_to_iceberg(entity: str, mode: str = "append") -> dict:
     fs, root = landing_fs()
@@ -84,6 +90,7 @@ def dbt_postgres_flow():
 # ---------------------------------------------------------------- main flow
 @flow(name="lakehouse-pipeline", log_prints=True)
 def lakehouse_pipeline(mode: str = "append", run_duckdb: bool = True, run_postgres: bool = True):
+    prepare_iceberg_catalog()
     results = landing_to_iceberg.map(list(ENTITIES), mode=unmapped(mode)).result()
     create_table_artifact(
         key="ingest-summary",
